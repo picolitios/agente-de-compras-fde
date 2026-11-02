@@ -17,7 +17,8 @@ import (
 var (
 	ErrCatalog          = errors.New("catálogo indisponível")
 	ErrAgent            = errors.New("agente indisponível")
-	knownProductPattern = regexp.MustCompile(`(?i)\b([1-9][0-9]{0,2})\s+(smartphones?|celulares?|laptops?|notebooks?)\b`)
+	knownProductPattern = regexp.MustCompile(`(?i)\b([1-9][0-9]{0,2})\s+(smartphones?|celulares?|laptops?|notebooks?|carros?)\b`)
+	unitLimitPattern    = regexp.MustCompile(`(?i)\bat[eé]\s+(?:US\$\s*)?([0-9][0-9.,]*)`)
 )
 
 const noMatchMessage = "Nenhum item foi encontrado dentro dos critérios informados. Tente alterar o escopo."
@@ -84,12 +85,20 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		return Response{}, fmt.Errorf("%w: %w", ErrAgent, err)
 	}
 	decision.Category = canonicalCategory(decision.Category)
-	// Recupera categoria e quantidade explícitas quando o modelo pequeno as omite em um falso no_match.
-	if decision.Status == "no_match" && (decision.Category == "" || decision.Quantity == 0) {
+	// Recupera pedidos explícitos quando o modelo pequeno responde clarify ou um falso no_match.
+	explicitCategory := false
+	if decision.Status == "no_match" || decision.Status == "clarify" {
 		if category, quantity, ok := knownCategoryQuantity(message); ok &&
 			(decision.Category == "" || decision.Category == category) &&
 			(decision.Quantity == 0 || decision.Quantity == quantity) {
 			decision.Category, decision.Quantity = category, quantity
+			explicitCategory = true
+		}
+	}
+	// Um teto unitário simples e explícito prevalece sobre um valor omitido ou errado pelo modelo.
+	if !mentionsOtherCurrency(message) {
+		if limit, ok := explicitUnitLimit(message); ok {
+			decision.MaxUnitPrice = limit
 		}
 	}
 	response := Response{Type: decision.Status, Message: decision.Message, ConversationID: conversationID}
@@ -97,12 +106,21 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	searchTerm := catalogSearchTerm(decision.Category)
 	if (decision.Status == "clarify" || decision.Status == "no_match") && decision.Category != "" && decision.Quantity > 0 &&
 		len(decision.Unverifiable) == 0 && (decision.SelectedProductID > 0 || len(decision.CandidateProductIDs) > 0 ||
-		(decision.Status == "no_match" && searchTerm != "")) {
+		(searchTerm != "" && (decision.Status == "no_match" || explicitCategory))) {
 		decision.Status = "select"
 	}
+	if decision.Status == "clarify" && len(decision.Unverifiable) == 0 && !mentionsOtherCurrency(message) {
+		if label, _ := noMatchSubject(message, decision.Category); label == "bananas" {
+			decision.Status = "no_match"
+		}
+	}
 	if decision.Status == "clarify" || decision.Status == "no_match" {
+		response.Type = decision.Status
 		if decision.Status == "no_match" {
-			response.Message = noMatchMessage
+			response.Message, err = f.explainNoMatch(ctx, message, decision, nil)
+			if err != nil {
+				return Response{}, err
+			}
 		}
 		return response, nil
 	}
@@ -140,6 +158,7 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	optionRequirements.Quantity = 1
 	optionRequirements.MaxTotalCents = nil
 	options := make([]catalog.Product, 0, 5)
+	searched := make([]catalog.Product, 0)
 	optionSnapshots := make([]purchases.Item, 0, 5)
 	seen := make(map[int]bool, 5)
 	for _, id := range append([]int{decision.SelectedProductID}, decision.CandidateProductIDs...) {
@@ -157,6 +176,7 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		if err != nil {
 			return Response{}, fmt.Errorf("%w: %v", ErrCatalog, err)
 		}
+		searched = append(searched, candidate)
 		if snapshot, err := purchases.ValidateSelection(optionRequirements, candidate); err == nil {
 			options = append(options, candidate)
 			optionSnapshots = append(optionSnapshots, snapshot)
@@ -168,6 +188,7 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		if err != nil {
 			return Response{}, fmt.Errorf("%w: %v", ErrCatalog, err)
 		}
+		searched = append(searched, found.Products...)
 		for _, candidate := range found.Products {
 			if len(options) == 5 {
 				break
@@ -202,7 +223,10 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	}
 	if suggested.ProductID == 0 {
 		response.Type = "no_match"
-		response.Message = noMatchMessage
+		response.Message, err = f.explainNoMatch(ctx, message, decision, searched)
+		if err != nil {
+			return Response{}, err
+		}
 		return response, nil
 	}
 	id, err := purchases.NewID()
@@ -233,6 +257,8 @@ func catalogSearchTerm(category string) string {
 		return "smartphone"
 	case "laptops":
 		return "laptop"
+	case "vehicle":
+		return "category:vehicle"
 	default:
 		return ""
 	}
@@ -245,6 +271,8 @@ func canonicalCategory(category string) string {
 		return "smartphones"
 	case "laptop", "laptops", "notebook", "notebooks":
 		return "laptops"
+	case "carro", "carros", "car", "cars", "vehicle", "vehicles", "veículo", "veículos":
+		return "vehicle"
 	default:
 		return category
 	}
@@ -265,9 +293,27 @@ func knownCategoryQuantity(message string) (string, int, bool) {
 		return "smartphones", quantity, true
 	case "laptop", "laptops", "notebook", "notebooks":
 		return "laptops", quantity, true
+	case "carro", "carros":
+		return "vehicle", quantity, true
 	default:
 		return "", 0, false
 	}
+}
+
+// explicitUnitLimit reconhece um único teto sem indicação de orçamento total.
+func explicitUnitLimit(message string) (string, bool) {
+	if strings.Contains(strings.ToLower(message), "total") {
+		return "", false
+	}
+	matches := unitLimitPattern.FindAllStringSubmatch(message, 2)
+	if len(matches) != 1 {
+		return "", false
+	}
+	limit := strings.ReplaceAll(matches[0][1], ",", ".")
+	if _, err := purchases.ParseCents(limit); err != nil {
+		return "", false
+	}
+	return limit, true
 }
 
 // Confirm consulta o catálogo novamente e deixa o repositório fazer a gravação atômica.

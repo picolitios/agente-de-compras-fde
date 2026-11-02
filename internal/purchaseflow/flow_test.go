@@ -3,6 +3,7 @@ package purchaseflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,8 @@ type stubDetails struct {
 	product        catalog.Product
 	products       map[int]catalog.Product
 	searchProducts []catalog.Product
+	searchByTerm   map[string][]catalog.Product
+	searchErr      error
 }
 
 func (s *stubDetails) Detail(_ context.Context, id int) (catalog.Product, error) {
@@ -33,8 +36,15 @@ func (s *stubDetails) Detail(_ context.Context, id int) (catalog.Product, error)
 	return s.product, nil
 }
 
-func (s *stubDetails) Search(context.Context, string) (catalog.SearchResult, error) {
-	return catalog.SearchResult{Products: s.searchProducts, Total: len(s.searchProducts)}, nil
+func (s *stubDetails) Search(_ context.Context, term string) (catalog.SearchResult, error) {
+	if s.searchErr != nil {
+		return catalog.SearchResult{}, s.searchErr
+	}
+	products := s.searchProducts
+	if s.searchByTerm != nil {
+		products = s.searchByTerm[term]
+	}
+	return catalog.SearchResult{Products: products, Total: len(products)}, nil
 }
 
 type stubStore struct {
@@ -192,15 +202,16 @@ func TestNoMatchMessage(t *testing.T) {
 	for _, test := range []struct {
 		decision purchaseagent.Decision
 		message  string
+		want     string
 	}{
-		{purchaseagent.Decision{Status: "no_match", Message: "Resposta arbitrária do modelo"}, "Produto sem correspondência"},
-		{purchaseagent.Decision{Status: "select", Message: "Item encontrado", Category: "laptops", Quantity: 2, MaxUnitPrice: "1", SelectedProductID: 78}, "2 laptops até US$ 1 cada"},
+		{purchaseagent.Decision{Status: "no_match", Message: "Resposta arbitrária do modelo"}, "Produto sem correspondência", noMatchMessage},
+		{purchaseagent.Decision{Status: "select", Message: "Item encontrado", Category: "laptops", Quantity: 2, MaxUnitPrice: "1", SelectedProductID: 78}, "2 laptops até US$ 1 cada", "aumentar o limite"},
 	} {
 		flow, _ := New(stubDecider{test.decision}, &stubDetails{product: catalog.Product{
 			ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99",
 		}}, &stubStore{})
 		response, err := flow.Start(context.Background(), "", test.message)
-		if err != nil || response.Type != "no_match" || response.Message != noMatchMessage {
+		if err != nil || response.Type != "no_match" || !strings.Contains(response.Message, test.want) {
 			t.Fatalf("resposta sem opções incorreta: %+v, %v", response, err)
 		}
 	}
@@ -295,5 +306,103 @@ func TestCatalogRecoversExplicitRequest(t *testing.T) {
 	response, err = flow.Start(context.Background(), "", "4 smartphones e 2 laptops")
 	if err != nil || response.Type != "no_match" || store.proposal.ID != "" {
 		t.Fatalf("pedido misto interpretado indevidamente: %+v, %v", response, err)
+	}
+}
+
+// TestNoMatchPriceExplainsAvailableVehicles diferencia falta de verba de falta de produto.
+func TestNoMatchPriceExplainsAvailableVehicles(t *testing.T) {
+	vehicles := []catalog.Product{
+		{ID: 100, Title: "Charger", Category: "vehicle", Price: "32999.99"},
+		{ID: 101, Title: "Hornet", Category: "vehicle", Price: "24999.99"},
+	}
+	for _, status := range []string{"no_match", "clarify"} {
+		t.Run(status, func(t *testing.T) {
+			decision := purchaseagent.Decision{Status: status, Message: "Não há carros", MaxUnitPrice: "100"}
+			if status == "clarify" {
+				decision.MaxUnitPrice = ""
+			}
+			flow, _ := New(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{
+				"category:vehicle": vehicles,
+			}}, &stubStore{})
+			response, err := flow.Start(context.Background(), "", "5 carros até 100 dólares")
+			if err != nil || response.Type != "no_match" || !strings.Contains(response.Message, "nenhum custa até US$ 100,00") ||
+				!strings.Contains(response.Message, "Hornet (US$ 24999,99)") || !strings.Contains(response.Message, "aumentar o limite") {
+				t.Fatalf("diagnóstico de preço inesperado: %+v, %v", response, err)
+			}
+		})
+	}
+}
+
+// TestNoMatchAbsentProduct explica a indisponibilidade sem sugerir uma faixa de preço fictícia.
+func TestNoMatchAbsentProduct(t *testing.T) {
+	for _, request := range []string{"5 carros até 100 dólares", "1 banana até 1 dólar"} {
+		t.Run(request, func(t *testing.T) {
+			flow, _ := New(stubDecider{purchaseagent.Decision{Status: "no_match"}}, &stubDetails{searchByTerm: map[string][]catalog.Product{}}, &stubStore{})
+			response, err := flow.Start(context.Background(), "", request)
+			if err != nil || response.Type != "no_match" || !strings.Contains(response.Message, "não está disponível") ||
+				!strings.Contains(response.Message, "celulares, laptops e itens de mercado") {
+				t.Fatalf("diagnóstico de ausência inesperado: %+v, %v", response, err)
+			}
+		})
+	}
+}
+
+// TestClarifyAbsentBanana corrige a conclusão do modelo quando o item foi informado com clareza.
+func TestClarifyAbsentBanana(t *testing.T) {
+	decision := purchaseagent.Decision{Status: "clarify", Message: "Não há banana", Category: "groceries", Quantity: 1}
+	flow, _ := New(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{}}, &stubStore{})
+	response, err := flow.Start(context.Background(), "", "1 banana até 1 dólar")
+	if err != nil || response.Type != "no_match" || !strings.Contains(response.Message, "Não encontrei bananas") {
+		t.Fatalf("diagnóstico de banana inesperado: %+v, %v", response, err)
+	}
+}
+
+// TestNoMatchCatalogError não apresenta uma falha de catálogo como ausência de produto.
+func TestNoMatchCatalogError(t *testing.T) {
+	flow, _ := New(stubDecider{purchaseagent.Decision{Status: "no_match"}}, &stubDetails{searchErr: errors.New("offline")}, &stubStore{})
+	_, err := flow.Start(context.Background(), "", "1 banana até 1 dólar")
+	if !errors.Is(err, ErrCatalog) {
+		t.Fatalf("falha do catálogo não propagada: %v", err)
+	}
+}
+
+// TestExplicitUnitLimitFiltersVehicleProposal impede que o modelo omita o teto informado.
+func TestExplicitUnitLimitFiltersVehicleProposal(t *testing.T) {
+	vehicles := []catalog.Product{
+		{ID: 100, Title: "Hornet", Category: "vehicle", Price: "24999.99"},
+		{ID: 101, Title: "Charger", Category: "vehicle", Price: "32999.99"},
+	}
+	products := map[int]catalog.Product{100: vehicles[0], 101: vehicles[1]}
+	decision := purchaseagent.Decision{Status: "clarify", Message: "Não há carros", CandidateProductIDs: []int{100, 101}}
+	flow, _ := New(stubDecider{decision}, &stubDetails{products: products, searchByTerm: map[string][]catalog.Product{
+		"category:vehicle": vehicles,
+	}}, &stubStore{})
+	response, err := flow.Start(context.Background(), "", "1 carro até 25000 dólares")
+	if err != nil || response.Type != "proposal" || len(response.Products) != 1 || response.Products[0].ID != 100 ||
+		response.Proposal.Requirements.MaxUnitCents == nil || *response.Proposal.Requirements.MaxUnitCents != 2500000 {
+		t.Fatalf("teto unitário ignorado: %+v, %v", response, err)
+	}
+}
+
+// TestExplicitUnitLimitSkipsTotalBudget mantém intacto um orçamento para o pedido inteiro.
+func TestExplicitUnitLimitSkipsTotalBudget(t *testing.T) {
+	if _, ok := explicitUnitLimit("3 laptops até US$ 5999.96 no total"); ok {
+		t.Fatal("orçamento total interpretado como limite unitário")
+	}
+	if limit, ok := explicitUnitLimit("1 carro até 25000 dólares"); !ok || limit != "25000" {
+		t.Fatalf("limite unitário não recuperado: %q, %t", limit, ok)
+	}
+}
+
+// TestNoMatchTotalBudget mostra a diferença entre preço unitário e verba para todas as unidades.
+func TestNoMatchTotalBudget(t *testing.T) {
+	product := catalog.Product{ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99"}
+	decision := purchaseagent.Decision{Status: "select", Category: "laptops", Quantity: 3,
+		MaxTotalPrice: "5000", SelectedProductID: 78}
+	flow, _ := New(stubDecider{decision}, &stubDetails{product: product}, &stubStore{})
+	response, err := flow.Start(context.Background(), "", "3 laptops até US$ 5000 no total")
+	if err != nil || response.Type != "no_match" || !strings.Contains(response.Message, "US$ 5999,97") ||
+		!strings.Contains(response.Message, "orçamento total de US$ 5000,00") {
+		t.Fatalf("diagnóstico do orçamento total inesperado: %+v, %v", response, err)
 	}
 }

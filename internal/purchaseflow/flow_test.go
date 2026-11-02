@@ -348,6 +348,133 @@ func TestNoMatchPriceExplainsAvailableVehicles(t *testing.T) {
 	}
 }
 
+// TestSingularCarRequest consulta veículos mesmo quando o modelo afirma que não há carros.
+func TestSingularCarRequest(t *testing.T) {
+	vehicles := []catalog.Product{
+		{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"},
+		{ID: 170, Title: "300 Touring", Category: "vehicle", Price: "28999.99"},
+	}
+	for _, status := range []string{"clarify", "no_match", "select"} {
+		t.Run(status, func(t *testing.T) {
+			decision := purchaseagent.Decision{Status: status, Message: "Não há carros no catálogo",
+				Category: "groceries", Quantity: 5, Unverifiable: []string{"carro"}}
+			flow, _ := New(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{
+				"category:vehicle": vehicles,
+			}}, &stubStore{})
+			response, err := flow.Start(context.Background(), "", "carro até 100 dolares")
+			if err != nil || response.Type != "no_match" || !strings.Contains(response.Message, "Há carros no catálogo") ||
+				!strings.Contains(response.Message, "US$ 24999,99") || response.Proposal != nil {
+				t.Fatalf("resposta de carro incorreta: %+v, %v", response, err)
+			}
+		})
+	}
+}
+
+// TestSingularCarProposal respeita o teto e a quantidade inferida para um pedido curto.
+func TestSingularCarProposal(t *testing.T) {
+	vehicles := []catalog.Product{
+		{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"},
+		{ID: 170, Title: "300 Touring", Category: "vehicle", Price: "28999.99"},
+		{ID: 171, Title: "Charger", Category: "vehicle", Price: "32999.99"},
+	}
+	details := &stubDetails{products: map[int]catalog.Product{},
+		searchByTerm: map[string][]catalog.Product{"category:vehicle": vehicles}}
+	for _, product := range vehicles {
+		details.products[product.ID] = product
+	}
+	decision := purchaseagent.Decision{Status: "clarify", Message: "Não há carros", Category: "carro"}
+	flow, _ := New(stubDecider{decision}, details, &stubStore{})
+	response, err := flow.Start(context.Background(), "", "quero um carro até 30000 dolares")
+	if err != nil || response.Type != "proposal" || len(response.Products) != 2 ||
+		response.Proposal.Requirements.Quantity != 1 || response.Proposal.Requirements.MaxUnitCents == nil ||
+		*response.Proposal.Requirements.MaxUnitCents != 3000000 {
+		t.Fatalf("proposta de carro incorreta: %+v, %v", response, err)
+	}
+}
+
+// TestSingularCarPattern não interpreta pedidos mistos ou qualificados como um carro simples.
+func TestSingularCarPattern(t *testing.T) {
+	for _, message := range []string{"carro e laptop até 100 dólares", "carro elétrico até 100 dólares", "carros até 100 dólares"} {
+		if _, _, ok := knownCategoryQuantity(message); ok {
+			t.Errorf("pedido ambíguo inferido: %q", message)
+		}
+	}
+}
+
+// TestPluralCarInquiry confirma a disponibilidade sem inventar quantidade.
+func TestPluralCarInquiry(t *testing.T) {
+	vehicle := catalog.Product{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"}
+	for _, status := range []string{"clarify", "no_match", "select"} {
+		t.Run(status, func(t *testing.T) {
+			decision := purchaseagent.Decision{Status: status, Message: "Não há carros", Category: "carros", Quantity: 5}
+			flow, _ := New(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{
+				"category:vehicle": {vehicle},
+			}}, &stubStore{})
+			response, err := flow.Start(context.Background(), "", "carros até 100 dolares")
+			if err != nil || response.Type != "clarify" || response.Proposal != nil ||
+				!strings.Contains(response.Message, "Há carros no catálogo") ||
+				!strings.Contains(response.Message, "US$ 24999,99") ||
+				!strings.Contains(response.Message, "Quantos carros") {
+				t.Fatalf("consulta plural incorreta: %+v, %v", response, err)
+			}
+		})
+	}
+}
+
+// TestPluralCarInquiryCatalogError não confunde falha de consulta com falta de carros.
+func TestPluralCarInquiryCatalogError(t *testing.T) {
+	flow, _ := New(stubDecider{purchaseagent.Decision{Status: "clarify"}},
+		&stubDetails{searchErr: errors.New("offline")}, &stubStore{})
+	if _, err := flow.Start(context.Background(), "", "carros até 100 dolares"); !errors.Is(err, ErrCatalog) {
+		t.Fatalf("falha do catálogo não propagada: %v", err)
+	}
+}
+
+// TestCarInquiryOtherCurrency não compara reais com os preços em USD do catálogo.
+func TestCarInquiryOtherCurrency(t *testing.T) {
+	vehicle := catalog.Product{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"}
+	flow, _ := New(stubDecider{purchaseagent.Decision{Status: "clarify", Message: "Não há carros"}},
+		&stubDetails{searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}}}, &stubStore{})
+	response, err := flow.Start(context.Background(), "", "carros até 100 reais")
+	if err != nil || response.Type != "clarify" || !strings.Contains(response.Message, "Há carros no catálogo") ||
+		!strings.Contains(response.Message, "catálogo usa USD") || strings.Contains(response.Message, "limite de US$ 100") {
+		t.Fatalf("moeda confundida com USD: %+v, %v", response, err)
+	}
+}
+
+// TestSingularCarBudgetContinuation preserva o pedido curto durante dois ajustes seguidos.
+func TestSingularCarBudgetContinuation(t *testing.T) {
+	vehicles := []catalog.Product{
+		{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"},
+		{ID: 170, Title: "300 Touring", Category: "vehicle", Price: "28999.99"},
+	}
+	decider := &sequenceDecider{decisions: []purchaseagent.Decision{
+		{Status: "clarify", Message: "Não há carros"},
+		{Status: "clarify", Message: "Não há carros"},
+		{Status: "clarify", Message: "Não há carros"},
+	}}
+	details := &stubDetails{products: map[int]catalog.Product{},
+		searchByTerm: map[string][]catalog.Product{"category:vehicle": vehicles}}
+	for _, product := range vehicles {
+		details.products[product.ID] = product
+	}
+	flow, _ := New(decider, details, &stubStore{})
+	first, err := flow.Start(context.Background(), "", "carro até 100 dolares")
+	if err != nil || first.Type != "no_match" {
+		t.Fatalf("pedido inicial inesperado: %+v, %v", first, err)
+	}
+	second, err := flow.Start(context.Background(), first.ConversationID, "aumente até 25 mil dolares")
+	if err != nil || second.Type != "proposal" || len(second.Products) != 1 ||
+		second.Proposal.Requirements.Quantity != 1 {
+		t.Fatalf("primeiro ajuste inesperado: %+v, %v", second, err)
+	}
+	third, err := flow.Start(context.Background(), first.ConversationID, "aumente para 30000,00")
+	if err != nil || third.Type != "proposal" || len(third.Products) != 2 ||
+		third.Proposal.Requirements.MaxUnitCents == nil || *third.Proposal.Requirements.MaxUnitCents != 3000000 {
+		t.Fatalf("segundo ajuste inesperado: %+v, %v", third, err)
+	}
+}
+
 // TestNoMatchAbsentProduct explica a indisponibilidade sem sugerir uma faixa de preço fictícia.
 func TestNoMatchAbsentProduct(t *testing.T) {
 	for _, request := range []string{"5 carros até 100 dólares", "1 banana até 1 dólar"} {

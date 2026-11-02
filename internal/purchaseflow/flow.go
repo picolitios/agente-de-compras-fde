@@ -19,6 +19,9 @@ var (
 	ErrCatalog          = errors.New("catálogo indisponível")
 	ErrAgent            = errors.New("agente indisponível")
 	knownProductPattern = regexp.MustCompile(`(?i)\b([1-9][0-9]{0,2})\s+(smartphones?|celulares?|laptops?|notebooks?|carros?)\b`)
+	carMentionPattern   = regexp.MustCompile(`(?i)\bcarros?\b`)
+	otherCurrencyWords  = regexp.MustCompile(`(?i)\b(reais|euros?|libras?)\b`)
+	singleCarPattern    = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco|um)\s+)*carro(?:\s+(?:de\s+)?at[eé]\s+(?:US\$\s*)?[0-9][0-9.,]*\s*(?:d[oó]lares?|usd)?(?:\s+cada)?)?\s*[.!?]?\s*$`)
 	unitLimitPattern    = regexp.MustCompile(`(?i)\bat[eé]\s+(?:US\$\s*)?([0-9][0-9.,]*)`)
 )
 
@@ -104,14 +107,19 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		decision.MaxUnitPrice, decision.MaxTotalPrice = adjustedLimit, ""
 		decision.RequiredBrand, decision.RequiredFeatures, decision.Unverifiable = "", nil, nil
 	}
-	// Recupera pedidos explícitos quando o modelo pequeno responde clarify ou um falso no_match.
+	// Recupera pedidos inequívocos quando o modelo pequeno omite ou distorce categoria e quantidade.
 	explicitCategory := false
-	if decision.Status == "no_match" || decision.Status == "clarify" {
+	if decision.Status == "no_match" || decision.Status == "clarify" || decision.Status == "select" {
+		simpleCar := singleCarPattern.MatchString(message)
 		if category, quantity, ok := knownCategoryQuantity(message); ok &&
-			(decision.Category == "" || decision.Category == category) &&
-			(decision.Quantity == 0 || decision.Quantity == quantity) {
+			(simpleCar || decision.Category == "" || decision.Category == category) &&
+			(simpleCar || decision.Quantity == 0 || decision.Quantity == quantity) {
 			decision.Category, decision.Quantity = category, quantity
 			explicitCategory = true
+			if simpleCar {
+				decision.MaxUnitPrice, decision.MaxTotalPrice = "", ""
+				decision.RequiredBrand, decision.RequiredFeatures, decision.Unverifiable = "", nil, nil
+			}
 		}
 	}
 	// Um teto unitário simples e explícito prevalece sobre um valor omitido ou errado pelo modelo.
@@ -119,6 +127,15 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		if limit, ok := explicitUnitLimit(message); ok {
 			decision.MaxUnitPrice = limit
 		}
+	}
+	// Sem quantidade inequívoca, confirme a existência de carros antes de repassar uma afirmação do modelo.
+	if carMentionPattern.MatchString(message) && len(knownProductPattern.FindAllStringSubmatch(message, 2)) == 0 &&
+		!singleCarPattern.MatchString(message) {
+		clarification, err := f.clarifyCarAvailability(ctx, message)
+		if err != nil {
+			return Response{}, err
+		}
+		return Response{Type: "clarify", Message: clarification, ConversationID: conversationID}, nil
 	}
 	response := Response{Type: decision.Status, Message: decision.Message, ConversationID: conversationID}
 	// IDs fornecidos mesmo em uma resposta contraditória passam pela validação real do catálogo.
@@ -312,9 +329,12 @@ func canonicalCategory(category string) string {
 	}
 }
 
-// knownCategoryQuantity aceita apenas um par explícito de quantidade e categoria do MVP.
+// knownCategoryQuantity recupera quantidade explícita ou um único carro no singular.
 func knownCategoryQuantity(message string) (string, int, bool) {
 	matches := knownProductPattern.FindAllStringSubmatch(message, 2)
+	if len(matches) == 0 && singleCarPattern.MatchString(message) {
+		return "vehicle", 1, true
+	}
 	if len(matches) != 1 {
 		return "", 0, false
 	}
@@ -436,5 +456,5 @@ func mentionsOtherCurrency(message string) bool {
 	upper := strings.ToUpper(message)
 	return strings.Contains(upper, "R$") || strings.Contains(upper, "BRL") ||
 		strings.Contains(upper, "EUR") || strings.Contains(upper, "€") ||
-		strings.Contains(upper, "£") || strings.Contains(upper, "GBP")
+		strings.Contains(upper, "£") || strings.Contains(upper, "GBP") || otherCurrencyWords.MatchString(message)
 }

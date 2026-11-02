@@ -18,6 +18,42 @@ type noMatchResult struct {
 	suggestedUnitCents int64
 }
 
+// clarifyCarAvailability confere a categoria sem presumir uma quantidade ausente no pedido.
+func (f *Flow) clarifyCarAvailability(ctx context.Context, request string) (string, error) {
+	result, err := f.details.Search(ctx, "category:vehicle")
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrCatalog, err)
+	}
+	var cheapest catalog.Product
+	var minimum int64
+	for _, product := range result.Products {
+		if product.Category != "vehicle" {
+			continue
+		}
+		cents, err := purchases.ParseCents(product.Price)
+		if err != nil {
+			return "", fmt.Errorf("%w: preço inválido na busca", ErrCatalog)
+		}
+		if cheapest.ID == 0 || cents < minimum {
+			cheapest, minimum = product, cents
+		}
+	}
+	if cheapest.ID == 0 {
+		return "Não encontrei carros no catálogo de demonstração; esse item não está disponível para requisição. Posso consultar celulares, laptops ou itens de mercado.", nil
+	}
+	message := fmt.Sprintf("Há carros no catálogo de demonstração. O menor preço encontrado é %s por unidade (%s).", formatUSD(minimum), cheapest.Title)
+	if mentionsOtherCurrency(request) {
+		return message + " O catálogo usa USD; informe a quantidade e um limite em dólares para preparar opções.", nil
+	}
+	if rawLimit, ok := explicitUnitLimit(request); ok {
+		limit, _ := purchases.ParseCents(rawLimit)
+		if limit < minimum {
+			message += fmt.Sprintf(" O limite de %s está abaixo desse valor.", formatUSD(limit))
+		}
+	}
+	return message + " Quantos carros você deseja? Informe também os demais critérios obrigatórios, se houver.", nil
+}
+
 // noMatchSubject identifica apenas pedidos cuja tradução para a busca do catálogo é conhecida.
 func noMatchSubject(message, category string) (label, term string) {
 	lower := strings.ToLower(message)

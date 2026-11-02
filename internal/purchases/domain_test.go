@@ -67,7 +67,7 @@ func TestTotal(t *testing.T) {
 	}
 }
 
-// TestValidateAllocation aplica quantidade exata, orçamento conjunto e snapshot de cada opção.
+// TestValidateAllocation aplica quantidade mínima, orçamento conjunto e snapshot de cada opção.
 func TestValidateAllocation(t *testing.T) {
 	limit := int64(350000)
 	req := Requirements{Quantity: 2, MaxTotalCents: &limit}
@@ -81,6 +81,17 @@ func TestValidateAllocation(t *testing.T) {
 	}
 	if _, err := ValidateAllocation(Requirements{Quantity: 3}, options, items); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("quantidade incompleta aceita: %v", err)
+	}
+	extra := []Item{options[0], {ProductID: 79, ProductName: "B", UnitPriceCents: 149999, Quantity: 2, SubtotalCents: 299998}}
+	if total, err := ValidateAllocation(Requirements{Quantity: 2}, options, extra); err != nil || total != 499997 {
+		t.Fatalf("quantidade acima do pedido rejeitada: %d, %v", total, err)
+	}
+	if _, err := ValidateAllocation(req, options, extra); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("orçamento total ignorado para quantidade extra: %v", err)
+	}
+	tooMany := []Item{{ProductID: 78, ProductName: "A", UnitPriceCents: 199999, Quantity: 1001, SubtotalCents: 200198999}}
+	if _, err := ValidateAllocation(Requirements{Quantity: 2}, options, tooMany); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("limite de 1000 unidades ignorado: %v", err)
 	}
 	tooLow := int64(349997)
 	if _, err := ValidateAllocation(Requirements{Quantity: 2, MaxTotalCents: &tooLow}, options, items); !errors.Is(err, ErrInvalid) {

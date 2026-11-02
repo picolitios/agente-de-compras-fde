@@ -172,7 +172,7 @@ func TestMixedSelection(t *testing.T) {
 	}
 	for _, invalid := range [][]purchases.Selection{
 		{{ProductID: 78, Quantity: 1}},
-		{{ProductID: 78, Quantity: 3}},
+		{{ProductID: 78, Quantity: 1001}},
 		{{ProductID: 80, Quantity: 2}},
 		{{ProductID: 78, Quantity: 1}, {ProductID: 78, Quantity: 1}},
 	} {
@@ -180,9 +180,9 @@ func TestMixedSelection(t *testing.T) {
 			t.Fatalf("seleção inválida aceita: %+v, %v", invalid, err)
 		}
 	}
-	selections := []purchases.Selection{{ProductID: 78, Quantity: 1}, {ProductID: 79, Quantity: 1}}
+	selections := []purchases.Selection{{ProductID: 78, Quantity: 1}, {ProductID: 79, Quantity: 2}}
 	purchase, err := flow.Confirm(context.Background(), response.Proposal.ID, selections)
-	if err != nil || len(purchase.Items) != 2 || purchase.TotalCents != 349998 || store.confirms != 1 {
+	if err != nil || len(purchase.Items) != 2 || purchase.TotalCents != 499997 || store.confirms != 1 {
 		t.Fatalf("seleção mista falhou: %+v, %v", purchase, err)
 	}
 }

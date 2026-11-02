@@ -304,13 +304,13 @@ func (f *Flow) Confirm(ctx context.Context, id string, selections []purchases.Se
 	seen := make(map[int]bool, len(selections))
 	quantity := 0
 	for _, selection := range selections {
-		if !allowed[selection.ProductID] || seen[selection.ProductID] || selection.Quantity <= 0 || selection.Quantity > proposal.Requirements.Quantity-quantity {
+		if !allowed[selection.ProductID] || seen[selection.ProductID] || selection.Quantity <= 0 || selection.Quantity > 1000-quantity {
 			return purchases.Purchase{}, purchases.ErrInvalid
 		}
 		seen[selection.ProductID] = true
 		quantity += selection.Quantity
 	}
-	if quantity != proposal.Requirements.Quantity {
+	if quantity < proposal.Requirements.Quantity {
 		return purchases.Purchase{}, purchases.ErrInvalid
 	}
 	// Consulta cada produto escolhido antes de calcular o total e solicitar a transação.

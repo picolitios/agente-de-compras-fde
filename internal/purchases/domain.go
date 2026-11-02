@@ -166,7 +166,7 @@ func Total(items []Item) (int64, error) {
 	return total, nil
 }
 
-// ValidateAllocation exige a quantidade pedida e compara cada item com a proposta salva.
+// ValidateAllocation exige ao menos a quantidade pedida e compara cada item com a proposta salva.
 func ValidateAllocation(req Requirements, options, items []Item) (int64, error) {
 	if req.Quantity <= 0 || req.Quantity > 1000 || len(options) == 0 || len(options) > 5 || len(items) == 0 || len(items) > len(options) {
 		return 0, ErrInvalid
@@ -196,7 +196,7 @@ func ValidateAllocation(req Requirements, options, items []Item) (int64, error) 
 		}
 		quantity += item.Quantity
 	}
-	if quantity != req.Quantity || (req.MaxTotalCents != nil && total > *req.MaxTotalCents) {
+	if quantity < req.Quantity || quantity > 1000 || (req.MaxTotalCents != nil && total > *req.MaxTotalCents) {
 		return 0, ErrInvalid
 	}
 	return total, nil

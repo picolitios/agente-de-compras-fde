@@ -8,7 +8,7 @@ import type {
 } from "../types";
 import { dateTime, money } from "../format";
 
-// ProductOption permite distribuir a quantidade pedida por produto verificado.
+// ProductOption permite distribuir as unidades entre produtos verificados.
 function ProductOption({
   product,
   option,
@@ -63,7 +63,7 @@ function ProductOption({
   );
 }
 
-// ProposalCard exige a quantidade completa e mostra o total calculado da seleção.
+// ProposalCard exige o mínimo pedido e mostra o total calculado da seleção.
 export default function ProposalCard({
   reply,
   active,
@@ -88,6 +88,7 @@ export default function ProposalCard({
         subtotal_cents: item.unit_price_cents,
       }));
   const requested = proposal.requirements.quantity;
+  const maxUnits = 1000;
   const selectedCount = Object.values(quantities).reduce(
     (sum, count) => sum + count,
     0,
@@ -117,8 +118,10 @@ export default function ProposalCard({
       </div>
       <h3>Escolha seus produtos</h3>
       <p className="proposal-meta">
-        Selecione {requested} {requested === 1 ? "unidade" : "unidades"} entre
-        as opções verificadas.
+        Selecione pelo menos {requested}{" "}
+        {requested === 1 ? "unidade" : "unidades"} entre as opções verificadas.
+        {requested < maxUnits &&
+          " Você pode adicionar mais unidades, até 1.000 no total."}
       </p>
       <div className="options-block">
         <h4>Produtos verificados</h4>
@@ -135,7 +138,7 @@ export default function ProposalCard({
                 product={product}
                 option={option}
                 quantity={quantity}
-                maxQuantity={requested - selectedCount + quantity}
+                maxQuantity={maxUnits - selectedCount + quantity}
                 disabled={!editable}
                 onQuantity={(next) =>
                   setQuantities((previous) => ({
@@ -150,8 +153,11 @@ export default function ProposalCard({
       </div>
       <div className="proposal-total">
         <span>
-          {selectedCount} de {requested}{" "}
-          {requested === 1 ? "unidade selecionada" : "unidades selecionadas"}
+          {selectedCount}{" "}
+          {selectedCount === 1
+            ? "unidade selecionada"
+            : "unidades selecionadas"}
+          {" · "}mínimo solicitado: {requested}
         </span>
         <strong>{money(total)}</strong>
       </div>
@@ -182,7 +188,12 @@ export default function ProposalCard({
         <button
           type="button"
           className="primary confirm-button"
-          disabled={confirming || selectedCount !== requested || overBudget}
+          disabled={
+            confirming ||
+            selectedCount < requested ||
+            selectedCount > maxUnits ||
+            overBudget
+          }
           onClick={() => onConfirm(proposal.id, selections)}
         >
           {confirming ? "Confirmando…" : "Confirmar requisição"}

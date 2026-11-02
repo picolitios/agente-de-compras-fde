@@ -78,8 +78,8 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		return Response{}, fmt.Errorf("%w: %w", ErrAgent, err)
 	}
 	response := Response{Type: decision.Status, Message: decision.Message, ConversationID: conversationID}
-	// Uma pergunta apenas para escolher entre alternativas vira proposta para seleção na interface.
-	if decision.Status == "clarify" && decision.Category != "" && decision.Quantity > 0 &&
+	// IDs fornecidos mesmo em uma resposta contraditória passam pela validação real do catálogo.
+	if (decision.Status == "clarify" || decision.Status == "no_match") && decision.Category != "" && decision.Quantity > 0 &&
 		len(decision.Unverifiable) == 0 && (decision.SelectedProductID > 0 || len(decision.CandidateProductIDs) > 0) {
 		decision.Status = "select"
 	}

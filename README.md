@@ -24,7 +24,7 @@ O OpenRouter usa `OPENROUTER_MODEL=google/gemma-4-31b-it:free` e `OPENROUTER_FAL
 
 Modelos `:free` têm limites de uso e podem receber HTTP 429 mesmo quando a chave e a integração estão corretas. Faça um pedido de teste antes da demonstração. Uma chave nova deve ser criada na conta OpenRouter do usuário e guardada apenas no `.env` local; a chave não é enviada ao frontend. Os testes automatizados verificam o contrato de ferramentas entre ADK, protocolo OpenAI e MCP sem consumir a API externa.
 
-O tempo máximo de processamento de um pedido é configurado por `REQUEST_TIMEOUT` (180 segundos por padrão no modo local). O proxy do frontend aguarda até 200 segundos. Modelos locais pequenos podem levar mais tempo e interpretar requisitos de forma incorreta; o backend continua validando produtos, quantidade e preços antes de registrar uma requisição.
+O tempo máximo de processamento de um pedido é configurado por `REQUEST_TIMEOUT` (180 segundos por padrão no modo local). O proxy do frontend aguarda até 200 segundos. No modo local, respostas finais malformadas recebem uma única tentativa de correção em JSON, sem repetir as ferramentas; o backend valida os IDs mesmo quando o modelo contradiz a lista que forneceu. Modelos locais pequenos ainda podem interpretar requisitos de forma incorreta; o backend continua validando produtos, quantidade e preços antes de registrar uma requisição.
 
 ## Fluxo
 

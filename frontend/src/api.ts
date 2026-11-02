@@ -1,4 +1,9 @@
-import type { ChatResponse, HistoryResponse, Purchase } from "./types";
+import type {
+  ChatResponse,
+  HistoryResponse,
+  Purchase,
+  Selection,
+} from "./types";
 
 interface APIError {
   erro?: { codigo?: string; mensagem?: string };
@@ -37,10 +42,15 @@ export function sendMessage(
   });
 }
 
-// confirmProposal não aceita preço ou itens fornecidos pela interface.
-export function confirmProposal(id: string): Promise<Purchase> {
+// confirmProposal envia somente IDs e quantidades para revalidação no backend.
+export function confirmProposal(
+  id: string,
+  selections: Selection[],
+): Promise<Purchase> {
   return request(`/requisicoes/${encodeURIComponent(id)}/confirmar`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ itens: selections }),
   });
 }
 

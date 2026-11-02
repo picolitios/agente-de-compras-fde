@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { confirmProposal, listPurchases, sendMessage } from "./api";
 import ProposalCard from "./components/ProposalCard";
 import HistoryPanel from "./components/HistoryPanel";
-import type { ChatResponse, Purchase } from "./types";
+import type { ChatResponse, Purchase, Selection } from "./types";
 
 interface Message {
   id: number;
@@ -100,12 +100,12 @@ export default function App() {
   }
 
   // A confirmação só marca sucesso após receber o número registrado no servidor.
-  async function confirm(id: string) {
+  async function confirm(id: string, selections: Selection[]) {
     if (confirmingID || sending) return;
     setChatError("");
     setConfirmingID(id);
     try {
-      const purchase = await confirmProposal(id);
+      const purchase = await confirmProposal(id, selections);
       setMessages((previous) =>
         previous.map((message) =>
           message.reply?.proposta?.id === id

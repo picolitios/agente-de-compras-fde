@@ -18,9 +18,16 @@ export interface Item {
 
 export interface Proposal {
   id: string;
+  requirements: { quantity: number; max_total_cents?: number };
   items: Item[];
+  options: Item[];
   total_cents: number;
   expires_at: string;
+}
+
+export interface Selection {
+  produto_id: number;
+  quantidade: number;
 }
 
 export interface Purchase {

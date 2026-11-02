@@ -14,6 +14,7 @@ import (
 	"time"
 
 	openai "github.com/openai/openai-go/v3"
+	"github.com/picolitios/agente-de-compras-fde/internal/purchaseagent"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseflow"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
 )
@@ -155,5 +156,13 @@ func TestProviderErrors(t *testing.T) {
 		if response.Code != tt.status || !strings.Contains(response.Body.String(), tt.code) || strings.Contains(response.Body.String(), "secret diagnostic") {
 			t.Errorf("erro do provedor: %d %s", response.Code, response.Body.String())
 		}
+	}
+	invalidModel := newHandler(t, &testChat{err: fmt.Errorf("%w: %w", purchaseflow.ErrAgent, purchaseagent.ErrInvalidDecision)}, testHealth{})
+	req := httptest.NewRequest(http.MethodPost, "/requisicoes", strings.NewReader(`{"mensagem":"3 laptops"}`))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	invalidModel.ServeHTTP(response, req)
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "MODEL_RESPONSE_INVALID") {
+		t.Fatalf("resposta inválida do modelo: %d %s", response.Code, response.Body.String())
 	}
 }

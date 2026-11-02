@@ -209,6 +209,8 @@ func (s *Server) handleError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "CATALOG_UNAVAILABLE", "Catálogo indisponível. Tente novamente.")
 	case errors.Is(err, purchaseagent.ErrModelLimit):
 		writeError(w, http.StatusBadGateway, "MODEL_LIMIT", "Não foi possível concluir a análise do pedido.")
+	case errors.Is(err, purchaseagent.ErrInvalidDecision):
+		writeError(w, http.StatusBadGateway, "MODEL_RESPONSE_INVALID", "O modelo devolveu uma resposta inválida. Tente novamente.")
 	case errors.Is(err, purchaseflow.ErrAgent) && errors.As(err, &providerError) &&
 		(providerError.StatusCode == http.StatusUnauthorized || providerError.StatusCode == http.StatusForbidden):
 		writeError(w, http.StatusBadGateway, "MODEL_AUTH", "O provedor do modelo recusou a configuração do serviço.")

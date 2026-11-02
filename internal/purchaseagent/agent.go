@@ -25,6 +25,7 @@ import (
 var systemPrompt string
 
 var ErrModelLimit = errors.New("limite de chamadas ao modelo excedido")
+var ErrInvalidDecision = errors.New("resposta inválida do modelo")
 
 // Decision contém a interpretação do modelo; nenhum campo é fonte de verdade financeira.
 type Decision struct {
@@ -102,20 +103,37 @@ func (d *ADKDecider) Decide(ctx context.Context, conversationID, message string)
 		}
 	}
 	if final == "" || len(final) > 16_384 {
-		return Decision{}, errors.New("resposta vazia ou longa demais do agente")
+		return Decision{}, ErrInvalidDecision
+	}
+	return parseDecision(final)
+}
+
+// parseDecision aceita um bloco JSON cercado por Markdown e mantém o contrato estrito.
+func parseDecision(final string) (Decision, error) {
+	final = strings.TrimSpace(final)
+	if strings.HasPrefix(final, "```") {
+		newline := strings.IndexByte(final, '\n')
+		if newline < 0 || !strings.HasSuffix(final, "```") {
+			return Decision{}, ErrInvalidDecision
+		}
+		language := strings.TrimSpace(final[3:newline])
+		if language != "" && !strings.EqualFold(language, "json") {
+			return Decision{}, ErrInvalidDecision
+		}
+		final = strings.TrimSpace(final[newline+1 : len(final)-3])
 	}
 	decoder := json.NewDecoder(strings.NewReader(final))
 	decoder.DisallowUnknownFields()
 	var decision Decision
 	if err := decoder.Decode(&decision); err != nil {
-		return Decision{}, fmt.Errorf("resposta inválida do agente: %w", err)
+		return Decision{}, fmt.Errorf("%w: %w", ErrInvalidDecision, err)
 	}
 	var extra any
 	if decoder.Decode(&extra) != io.EOF {
-		return Decision{}, errors.New("resposta adicional do agente")
+		return Decision{}, ErrInvalidDecision
 	}
 	if decision.Message == "" || (decision.Status != "clarify" && decision.Status != "no_match" && decision.Status != "select") {
-		return Decision{}, errors.New("decisão inválida do agente")
+		return Decision{}, ErrInvalidDecision
 	}
 	return decision, nil
 }

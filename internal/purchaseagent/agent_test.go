@@ -79,3 +79,24 @@ func TestModelCallLimit(t *testing.T) {
 		t.Fatalf("limite não aplicado: %v", err)
 	}
 }
+
+// TestParseDecision aceita cercas Markdown sem aceitar campos ou texto adicional.
+func TestParseDecision(t *testing.T) {
+	valid := `{"status":"select","message":"Encontrei opções","category":"laptops","quantity":2,"selected_product_id":78}`
+	for _, input := range []string{valid, "```json\n" + valid + "\n```", "```\n" + valid + "\n```"} {
+		decision, err := parseDecision(input)
+		if err != nil || decision.Quantity != 2 || decision.SelectedProductID != 78 {
+			t.Fatalf("resposta válida rejeitada: %+v, %v", decision, err)
+		}
+	}
+	for _, input := range []string{
+		"```json\n" + valid,
+		"```json\n" + valid + "\n``` texto extra",
+		"```json\n" + valid[:len(valid)-1] + `,"preco":1}` + "\n```",
+		valid + valid,
+	} {
+		if _, err := parseDecision(input); !errors.Is(err, ErrInvalidDecision) {
+			t.Fatalf("resposta inválida aceita: %q, %v", input, err)
+		}
+	}
+}

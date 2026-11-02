@@ -243,7 +243,15 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		return Response{}, fmt.Errorf("salvar proposta: %w", err)
 	}
 	response.Type = "proposal"
-	response.Message = fmt.Sprintf("Encontrei %d opções verificadas. Escolha %d unidades entre elas e confirme a requisição.", len(options), requirements.Quantity)
+	unitNoun := "unidades"
+	if requirements.Quantity == 1 {
+		unitNoun = "unidade"
+	}
+	if len(options) == 1 {
+		response.Message = fmt.Sprintf("Encontrei 1 opção verificada. Escolha pelo menos %d %s e confirme a requisição.", requirements.Quantity, unitNoun)
+	} else {
+		response.Message = fmt.Sprintf("Encontrei %d opções verificadas. Escolha pelo menos %d %s entre elas e confirme a requisição.", len(options), requirements.Quantity, unitNoun)
+	}
 	response.SelectedProductID = suggested.ProductID
 	response.Products = options
 	response.Proposal = &proposal

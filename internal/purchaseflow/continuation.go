@@ -28,17 +28,18 @@ var budgetWords = map[string]bool{
 	"menor": true, "sugerido": true, "sugerida": true, "proposto": true, "proposta": true,
 }
 
-// pendingBudget guarda somente uma sugestão de preço verificável na conversa ativa.
+// pendingBudget guarda o escopo de uma sugestão de preço ou proposta ainda ativa.
 type pendingBudget struct {
 	category     string
 	quantity     int
 	minimumCents int64
+	proposalID   string
 	expiresAt    time.Time
 }
 
 // budgetFollowup interpreta uma resposta curta que muda apenas o limite unitário.
 func budgetFollowup(message string, pending pendingBudget) (string, bool) {
-	if pending.minimumCents <= 0 || !budgetOnlyWords(message) {
+	if !budgetOnlyWords(message) {
 		return "", false
 	}
 	matches := followupAmountPattern.FindAllStringSubmatch(strings.ToLower(message), 2)
@@ -46,6 +47,9 @@ func budgetFollowup(message string, pending pendingBudget) (string, bool) {
 		return "", false
 	}
 	if len(matches) == 0 {
+		if pending.minimumCents <= 0 {
+			return "", false
+		}
 		lower := strings.ToLower(message)
 		if !strings.Contains(lower, "sim") && !strings.Contains(lower, "aument") &&
 			!strings.Contains(lower, "ajust") && !strings.Contains(lower, "pode") &&
@@ -148,6 +152,22 @@ func (f *Flow) rememberPending(conversationID string, decisionCategory string, q
 		f.clearPending(conversationID)
 		return
 	}
+	f.storeBudgetContext(conversationID, pendingBudget{category: decisionCategory, quantity: quantity,
+		minimumCents: minimumCents, expiresAt: time.Now().Add(pendingBudgetTTL)})
+}
+
+// rememberProposal mantém o escopo da proposta para ajustes explícitos antes da confirmação.
+func (f *Flow) rememberProposal(conversationID, proposalID, category string, quantity int, expiresAt time.Time) {
+	if quantity <= 0 || quantity > 1000 || catalogSearchTerm(category) == "" {
+		f.clearPending(conversationID)
+		return
+	}
+	f.storeBudgetContext(conversationID, pendingBudget{category: category, quantity: quantity,
+		proposalID: proposalID, expiresAt: expiresAt})
+}
+
+// storeBudgetContext limita a quantidade de conversas com contexto temporário na memória.
+func (f *Flow) storeBudgetContext(conversationID string, pending pendingBudget) {
 	f.pendingMu.Lock()
 	defer f.pendingMu.Unlock()
 	if len(f.pending) >= maxPendingBudgets {
@@ -163,8 +183,16 @@ func (f *Flow) rememberPending(conversationID string, decisionCategory string, q
 			}
 		}
 	}
-	f.pending[conversationID] = pendingBudget{category: decisionCategory, quantity: quantity,
-		minimumCents: minimumCents, expiresAt: time.Now().Add(pendingBudgetTTL)}
+	f.pending[conversationID] = pending
+}
+
+// clearConfirmedProposal remove apenas o contexto da proposta efetivamente confirmada.
+func (f *Flow) clearConfirmedProposal(conversationID, proposalID string) {
+	f.pendingMu.Lock()
+	if pending, ok := f.pending[conversationID]; ok && pending.proposalID == proposalID {
+		delete(f.pending, conversationID)
+	}
+	f.pendingMu.Unlock()
 }
 
 // clearPending impede que uma sugestão antiga interfira em um pedido novo ou concluído.

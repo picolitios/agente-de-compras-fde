@@ -267,7 +267,7 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	if err := f.store.SaveProposal(ctx, proposal); err != nil {
 		return Response{}, fmt.Errorf("salvar proposta: %w", err)
 	}
-	f.clearPending(conversationID)
+	f.rememberProposal(conversationID, proposal.ID, requirements.Category, requirements.Quantity, proposal.ExpiresAt)
 	response.Type = "proposal"
 	unitNoun := "unidades"
 	if requirements.Quantity == 1 {
@@ -360,7 +360,11 @@ func (f *Flow) Confirm(ctx context.Context, id string, selections []purchases.Se
 		return purchases.Purchase{}, err
 	}
 	if proposal.PurchaseID != nil {
-		return f.store.GetPurchase(ctx, *proposal.PurchaseID)
+		purchase, err := f.store.GetPurchase(ctx, *proposal.PurchaseID)
+		if err == nil {
+			f.clearConfirmedProposal(proposal.ConversationID, proposal.ID)
+		}
+		return purchase, err
 	}
 	if !time.Now().Before(proposal.ExpiresAt) {
 		return purchases.Purchase{}, purchases.ErrExpired
@@ -420,7 +424,11 @@ func (f *Flow) Confirm(ctx context.Context, id string, selections []purchases.Se
 	if _, err := purchases.ValidateAllocation(proposal.Requirements, options, currentItems); err != nil {
 		return purchases.Purchase{}, err
 	}
-	return f.store.Confirm(ctx, id, currentItems)
+	purchase, err := f.store.Confirm(ctx, id, currentItems)
+	if err == nil {
+		f.clearConfirmedProposal(proposal.ConversationID, proposal.ID)
+	}
+	return purchase, err
 }
 
 // mentionsOtherCurrency impede comparar preços USD sem conversão definida.

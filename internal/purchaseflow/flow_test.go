@@ -465,6 +465,46 @@ func TestBudgetAcceptance(t *testing.T) {
 	}
 }
 
+// TestBudgetContinuationAfterProposal amplia as opções antes da confirmação sem perder o produto.
+func TestBudgetContinuationAfterProposal(t *testing.T) {
+	vehicles := []catalog.Product{
+		{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"},
+		{ID: 170, Title: "300 Touring", Category: "vehicle", Price: "28999.99"},
+		{ID: 171, Title: "Charger", Category: "vehicle", Price: "32999.99"},
+	}
+	decider := &sequenceDecider{decisions: []purchaseagent.Decision{
+		{Status: "select", Category: "vehicle", Quantity: 1, MaxUnitPrice: "25000", SelectedProductID: 169},
+		{Status: "clarify", Message: "Não há carros no catálogo"},
+		{Status: "clarify", Message: "Informe o pedido"},
+	}}
+	details := &stubDetails{products: map[int]catalog.Product{},
+		searchByTerm: map[string][]catalog.Product{"category:vehicle": vehicles}}
+	for _, product := range vehicles {
+		details.products[product.ID] = product
+	}
+	store := &stubStore{}
+	flow, _ := New(decider, details, store)
+	first, err := flow.Start(context.Background(), "", "1 carro até 25000 dólares")
+	if err != nil || first.Type != "proposal" || len(first.Products) != 1 {
+		t.Fatalf("primeira proposta inesperada: %+v, %v", first, err)
+	}
+	second, err := flow.Start(context.Background(), first.ConversationID, "aumente para 30000,00")
+	if err != nil || second.Type != "proposal" || second.ConversationID != first.ConversationID ||
+		second.Proposal.ID == first.Proposal.ID || len(second.Products) != 2 ||
+		second.Products[0].ID != 169 || second.Products[1].ID != 170 ||
+		second.Proposal.Requirements.MaxUnitCents == nil || *second.Proposal.Requirements.MaxUnitCents != 3000000 ||
+		decider.messages[1] != "1 carro até US$ 30000 cada" {
+		t.Fatalf("revisão da proposta falhou: %+v, mensagens: %+v, erro: %v", second, decider.messages, err)
+	}
+	if _, err := flow.Confirm(context.Background(), second.Proposal.ID, nil); err != nil {
+		t.Fatalf("confirmação da proposta revisada falhou: %v", err)
+	}
+	third, err := flow.Start(context.Background(), first.ConversationID, "aumente para 35000")
+	if err != nil || third.Type != "clarify" || decider.messages[2] != "aumente para 35000" {
+		t.Fatalf("proposta confirmada manteve contexto antigo: %+v, %v", third, err)
+	}
+}
+
 // TestBudgetContinuationIsScoped não aplica um ajuste antigo a outra conversa ou a um novo produto.
 func TestBudgetContinuationIsScoped(t *testing.T) {
 	product := catalog.Product{ID: 169, Title: "Dodge Hornet", Category: "vehicle", Price: "24999.99"}
@@ -528,5 +568,12 @@ func TestBudgetFollowupParsing(t *testing.T) {
 		if got, ok := budgetFollowup(message, pending); ok {
 			t.Errorf("mensagem não relacionada %q aceita como preço %q", message, got)
 		}
+	}
+	activeProposal := pendingBudget{proposalID: "active"}
+	if got, ok := budgetFollowup("aumente para 30000,00", activeProposal); !ok || got != "30000" {
+		t.Fatalf("ajuste após proposta não reconhecido: %q, %t", got, ok)
+	}
+	if _, ok := budgetFollowup("sim", activeProposal); ok {
+		t.Fatal("proposta ativa interpretou sim como novo preço")
 	}
 }

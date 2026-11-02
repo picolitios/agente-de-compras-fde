@@ -33,7 +33,7 @@ export default function App() {
   const [historyVersion, setHistoryVersion] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const nextID = useRef(0);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const conversationRef = useRef<HTMLDivElement>(null);
 
   // O histórico é relido após a confirmação e quando a página muda.
   useEffect(() => {
@@ -58,7 +58,8 @@ export default function App() {
   }, [historyOffset, historyVersion]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const conversation = conversationRef.current;
+    if (conversation) conversation.scrollTop = conversation.scrollHeight;
   }, [messages, sending]);
 
   // O envio preserva o texto quando há falha para permitir uma nova tentativa.
@@ -154,6 +155,7 @@ export default function App() {
           </div>
           <div
             className="conversation"
+            ref={conversationRef}
             aria-live="polite"
             aria-relevant="additions text"
           >
@@ -213,7 +215,6 @@ export default function App() {
                 </div>
               </div>
             )}
-            <div ref={bottomRef} />
           </div>
           <div className="composer-wrap">
             {chatError && (

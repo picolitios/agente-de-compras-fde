@@ -40,7 +40,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Defina DATABASE_URL no .env}
       MCP_URL: http://mcp:8081/mcp
       API_PORT: "8080"
-      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-30s}
+      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-90s}
       CATALOG_TIMEOUT: ${CATALOG_TIMEOUT:-5s}
       MAX_MODEL_CALLS: ${MAX_MODEL_CALLS:-8}
     ports:

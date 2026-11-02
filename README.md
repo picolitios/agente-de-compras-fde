@@ -21,6 +21,8 @@ O padrão é `OPENROUTER_MODEL=google/gemma-4-31b-it:free`. O Gemma 4 aceita cha
 
 Modelos `:free` têm limites de uso e podem receber HTTP 429 mesmo quando a chave e a integração estão corretas. Faça um pedido de teste antes da demonstração. Uma chave nova deve ser criada na conta OpenRouter do usuário e guardada apenas no `.env` local; a chave não é enviada ao frontend. Os testes automatizados verificam o contrato de ferramentas entre ADK, protocolo OpenAI e MCP sem consumir a API externa.
 
+O tempo máximo de processamento de um pedido é configurado por `REQUEST_TIMEOUT` (90 segundos por padrão). O proxy do frontend aguarda até 100 segundos. Se o modelo gratuito atingir seu limite ou devolver uma resposta inválida, a API informa o motivo sem expor dados internos; o usuário pode tentar novamente.
+
 ## Fluxo
 
 1. O usuário descreve categoria, quantidade e critérios no chat.

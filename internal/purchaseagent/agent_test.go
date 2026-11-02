@@ -46,6 +46,54 @@ func (m *fakeModel) GenerateContent(_ context.Context, request *model.LLMRequest
 	}
 }
 
+type malformedModel struct{ calls int }
+
+func (*malformedModel) Name() string { return "malformed-tool-model" }
+
+func (m *malformedModel) GenerateContent(_ context.Context, _ *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		m.calls++
+		if m.calls == 1 {
+			yield(&model.LLMResponse{Content: &genai.Content{Role: genai.RoleModel,
+				Parts: []*genai.Part{genai.NewPartFromFunctionCall("buscar_produtos", map[string]any{"termo": "laptop"})}}}, nil)
+			return
+		}
+		yield(&model.LLMResponse{Content: genai.NewContentFromText(`{"status":"select","message":"Encontrei um laptop",texto inválido`, genai.RoleModel)}, nil)
+	}
+}
+
+type repairModel struct{ calls int }
+
+func (*repairModel) Name() string { return "repair-model" }
+
+func (m *repairModel) GenerateContent(_ context.Context, request *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		m.calls++
+		if len(request.Tools) != 0 || len(request.Contents) != 2 {
+			yield(nil, errors.New("correção recebeu ferramentas ou perdeu contexto"))
+			return
+		}
+		yield(&model.LLMResponse{Content: genai.NewContentFromText(`{"status":"select","message":"Encontrei um laptop","category":"laptops","quantity":2,"max_unit_price":"2000","max_total_price":"","required_brand":"","required_features":[],"unverifiable":[],"selected_product_id":78,"candidate_product_ids":[78]}`, genai.RoleModel)}, nil)
+	}
+}
+
+// TestRepairMalformedFinal mantém a busca MCP e limita a correção ao JSON final.
+func TestRepairMalformedFinal(t *testing.T) {
+	source := &fakeCatalog{}
+	mcpServer, _ := mcptools.NewServer(source)
+	server := httptest.NewServer(mcptools.NewHTTPHandler(mcpServer))
+	defer server.Close()
+	primary, repair := &malformedModel{}, &repairModel{}
+	decider, err := New(primary, repair, server.URL+"/mcp", server.Client(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := decider.Decide(context.Background(), "repair-test", "Quero 2 laptops até 2000 dólares")
+	if err != nil || decision.SelectedProductID != 78 || source.searches != 1 || primary.calls != 2 || repair.calls != 1 {
+		t.Fatalf("correção inesperada: decisão=%+v buscas=%d chamadas=%d/%d erro=%v", decision, source.searches, primary.calls, repair.calls, err)
+	}
+}
+
 // TestADKToolCycle verifica que o ADK entrega a ferramenta MCP ao modelo e executa sua chamada.
 func TestADKToolCycle(t *testing.T) {
 	source := &fakeCatalog{}
@@ -56,7 +104,7 @@ func TestADKToolCycle(t *testing.T) {
 	server := httptest.NewServer(mcptools.NewHTTPHandler(mcpServer))
 	defer server.Close()
 	model := &fakeModel{}
-	decider, err := New(model, server.URL+"/mcp", server.Client(), 3)
+	decider, err := New(model, nil, server.URL+"/mcp", server.Client(), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +121,7 @@ func TestModelCallLimit(t *testing.T) {
 	server := httptest.NewServer(mcptools.NewHTTPHandler(mcpServer))
 	defer server.Close()
 	model := &fakeModel{}
-	decider, _ := New(model, server.URL+"/mcp", &http.Client{}, 1)
+	decider, _ := New(model, nil, server.URL+"/mcp", &http.Client{}, 1)
 	_, err := decider.Decide(context.Background(), "conversation-2", "Preciso de 3 laptops")
 	if !errors.Is(err, ErrModelLimit) {
 		t.Fatalf("limite não aplicado: %v", err)

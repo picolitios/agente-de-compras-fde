@@ -27,6 +27,8 @@ var systemPrompt string
 var ErrModelLimit = errors.New("limite de chamadas ao modelo excedido")
 var ErrInvalidDecision = errors.New("resposta inválida do modelo")
 
+const decisionFormat = `{"status":"clarify|no_match|select","message":"texto em português","category":"categoria ou vazio","quantity":0,"max_unit_price":"decimal ou vazio","max_total_price":"decimal ou vazio","required_brand":"marca ou vazio","required_features":[],"unverifiable":[],"selected_product_id":0,"candidate_product_ids":[]}`
+
 // Decision contém a interpretação do modelo; nenhum campo é fonte de verdade financeira.
 type Decision struct {
 	Status              string   `json:"status"`
@@ -45,6 +47,7 @@ type Decision struct {
 // ADKDecider executa um único agente ADK com ferramentas de catálogo remotas.
 type ADKDecider struct {
 	model         model.LLM
+	repairModel   model.LLM
 	mcpURL        string
 	httpClient    *http.Client
 	sessions      session.Service
@@ -52,11 +55,11 @@ type ADKDecider struct {
 }
 
 // New prepara as dependências compartilhadas pelo agente entre mensagens.
-func New(model model.LLM, mcpURL string, httpClient *http.Client, maxModelCalls int) (*ADKDecider, error) {
+func New(model, repairModel model.LLM, mcpURL string, httpClient *http.Client, maxModelCalls int) (*ADKDecider, error) {
 	if model == nil || mcpURL == "" || httpClient == nil || maxModelCalls < 1 {
 		return nil, errors.New("configuração do agente inválida")
 	}
-	return &ADKDecider{model: model, mcpURL: mcpURL, httpClient: httpClient,
+	return &ADKDecider{model: model, repairModel: repairModel, mcpURL: mcpURL, httpClient: httpClient,
 		sessions: session.InMemoryService(), maxModelCalls: maxModelCalls}, nil
 }
 
@@ -105,7 +108,37 @@ func (d *ADKDecider) Decide(ctx context.Context, conversationID, message string)
 	if final == "" || len(final) > 16_384 {
 		return Decision{}, ErrInvalidDecision
 	}
-	return parseDecision(final)
+	decision, err := parseDecision(final)
+	if err == nil || !errors.Is(err, ErrInvalidDecision) || d.repairModel == nil || modelCalls >= d.maxModelCalls {
+		return decision, err
+	}
+	return d.repairDecision(ctx, message, final)
+}
+
+// repairDecision solicita uma única correção de formato sem ferramentas nem novos dados de catálogo.
+func (d *ADKDecider) repairDecision(ctx context.Context, message, invalid string) (Decision, error) {
+	request := &model.LLMRequest{Model: d.repairModel.Name(), Contents: []*genai.Content{
+		genai.NewContentFromText("Corrija apenas o formato da resposta JSON abaixo para o contrato indicado. Preserve os fatos do pedido, IDs de produtos e critérios; não invente opções. Responda somente com JSON. Contrato: "+decisionFormat, genai.RoleUser),
+		genai.NewContentFromText("Pedido: "+message+"\nResposta a corrigir: "+invalid, genai.RoleUser),
+	}}
+	var repaired string
+	for response, err := range d.repairModel.GenerateContent(ctx, request, false) {
+		if err != nil {
+			return Decision{}, fmt.Errorf("corrigir formato da resposta: %w", err)
+		}
+		if response == nil || response.Content == nil {
+			continue
+		}
+		for _, part := range response.Content.Parts {
+			if part != nil && !part.Thought {
+				repaired += part.Text
+			}
+		}
+	}
+	if repaired == "" || len(repaired) > 16_384 {
+		return Decision{}, ErrInvalidDecision
+	}
+	return parseDecision(repaired)
 }
 
 // parseDecision aceita um bloco JSON cercado por Markdown e mantém o contrato estrito.

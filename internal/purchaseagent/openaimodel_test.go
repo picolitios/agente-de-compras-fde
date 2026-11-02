@@ -58,7 +58,7 @@ func TestOpenAICompatibleToolCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decider, err := New(llm, mcpHTTP.URL+"/mcp", client, 3)
+	decider, err := New(llm, nil, mcpHTTP.URL+"/mcp", client, 3)
 	if err != nil {
 		t.Fatal(err)
 	}

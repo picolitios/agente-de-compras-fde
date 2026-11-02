@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/picolitios/agente-de-compras-fde/internal/httpapi"
 	"github.com/picolitios/agente-de-compras-fde/internal/mcpclient"
+	"github.com/picolitios/agente-de-compras-fde/internal/ollama"
 	"github.com/picolitios/agente-de-compras-fde/internal/openrouter"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseagent"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseflow"
@@ -122,6 +123,7 @@ func main() {
 	modelName, baseURL, apiKey := cfg.model, "https://openrouter.ai/api/v1", cfg.apiKey
 	if cfg.provider == "ollama" {
 		modelName, baseURL, apiKey = cfg.ollamaModel, cfg.ollamaBaseURL, "ollama"
+		modelHTTPClient.Transport = ollama.Transport{}
 	} else if cfg.fallbackModel != "" {
 		modelHTTPClient.Transport = openrouter.FallbackTransport{Primary: cfg.model, Fallback: cfg.fallbackModel}
 	}
@@ -134,7 +136,20 @@ func main() {
 		logger.Error("configurar modelo", "error_type", fmt.Sprintf("%T", err))
 		os.Exit(1)
 	}
-	decider, err := purchaseagent.New(llm, cfg.mcpURL, &http.Client{Timeout: cfg.catalogTimeout}, cfg.maxModelCalls)
+	var repairModel model.LLM
+	if cfg.provider == "ollama" {
+		// O modo JSON é reservado para reparar uma resposta final malformada: ativá-lo com ferramentas suprime buscas no modelo local.
+		repairClient := &http.Client{Timeout: cfg.requestTimeout, Transport: ollama.Transport{JSON: true}}
+		repairModel, err = openaimodel.NewModel(startupCtx, modelName, &openaimodel.ClientConfig{
+			APIKey: apiKey, BaseURL: baseURL, API: openaimodel.APIChatCompletions,
+			HTTPClient: repairClient,
+		})
+		if err != nil {
+			logger.Error("configurar correção de resposta", "error_type", fmt.Sprintf("%T", err))
+			os.Exit(1)
+		}
+	}
+	decider, err := purchaseagent.New(llm, repairModel, cfg.mcpURL, &http.Client{Timeout: cfg.catalogTimeout}, cfg.maxModelCalls)
 	if err != nil {
 		logger.Error("configurar agente", "error", err)
 		os.Exit(1)

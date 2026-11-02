@@ -78,10 +78,16 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		return Response{}, fmt.Errorf("%w: %w", ErrAgent, err)
 	}
 	response := Response{Type: decision.Status, Message: decision.Message, ConversationID: conversationID}
+	// Uma pergunta apenas para escolher entre alternativas vira proposta para seleção na interface.
+	if decision.Status == "clarify" && decision.Category != "" && decision.Quantity > 0 &&
+		len(decision.Unverifiable) == 0 && (decision.SelectedProductID > 0 || len(decision.CandidateProductIDs) > 0) {
+		decision.Status = "select"
+	}
 	if decision.Status == "clarify" || decision.Status == "no_match" {
 		return response, nil
 	}
-	if decision.Status != "select" || decision.SelectedProductID <= 0 || decision.Quantity <= 0 || decision.Quantity > 1000 || decision.Category == "" || len(decision.CandidateProductIDs) > 4 {
+	if decision.Status != "select" || decision.Quantity <= 0 || decision.Quantity > 1000 || decision.Category == "" ||
+		(decision.SelectedProductID <= 0 && len(decision.CandidateProductIDs) == 0) || len(decision.CandidateProductIDs) > 20 {
 		return Response{}, fmt.Errorf("%w: seleção inválida", ErrAgent)
 	}
 	if len(decision.Unverifiable) > 0 || mentionsOtherCurrency(message) {
@@ -117,6 +123,9 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	optionSnapshots := make([]purchases.Item, 0, 5)
 	seen := make(map[int]bool, 5)
 	for _, id := range append([]int{decision.SelectedProductID}, decision.CandidateProductIDs...) {
+		if len(seen) == 5 {
+			break
+		}
 		if id <= 0 || seen[id] {
 			continue
 		}

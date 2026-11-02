@@ -181,3 +181,21 @@ func TestMixedSelection(t *testing.T) {
 		t.Fatalf("seleção mista falhou: %+v, %v", purchase, err)
 	}
 }
+
+// TestCandidateOnlyDecision aceita a lista local sem confiar em IDs ou valores do modelo.
+func TestCandidateOnlyDecision(t *testing.T) {
+	decision := validDecision()
+	decision.Status = "clarify"
+	decision.SelectedProductID = 0
+	decision.CandidateProductIDs = []int{78, 79, 80, 81, 82}
+	details := &stubDetails{products: map[int]catalog.Product{
+		78: {ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99"},
+		79: {ID: 79, Title: "Telefone", Category: "smartphones", Price: "800.00"},
+	}}
+	store := &stubStore{}
+	flow, _ := New(stubDecider{decision}, details, store)
+	response, err := flow.Start(context.Background(), "", "3 laptops")
+	if err != nil || response.Type != "proposal" || len(response.Products) != 1 || response.SelectedProductID != 78 {
+		t.Fatalf("alternativas locais inválidas: %+v, %v", response, err)
+	}
+}

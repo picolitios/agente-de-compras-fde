@@ -20,6 +20,8 @@ var (
 	knownProductPattern = regexp.MustCompile(`(?i)\b([1-9][0-9]{0,2})\s+(smartphones?|celulares?|laptops?|notebooks?)\b`)
 )
 
+const noMatchMessage = "Nenhum item foi encontrado dentro dos critérios informados. Tente alterar o escopo."
+
 // Decider deixa a escolha de ferramentas e produtos a cargo do agente ADK.
 type Decider interface {
 	Decide(context.Context, string, string) (purchaseagent.Decision, error)
@@ -99,6 +101,9 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		decision.Status = "select"
 	}
 	if decision.Status == "clarify" || decision.Status == "no_match" {
+		if decision.Status == "no_match" {
+			response.Message = noMatchMessage
+		}
 		return response, nil
 	}
 	if decision.Status != "select" || decision.Quantity <= 0 || decision.Quantity > 1000 || decision.Category == "" ||
@@ -197,7 +202,7 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	}
 	if suggested.ProductID == 0 {
 		response.Type = "no_match"
-		response.Message = "Os produtos encontrados não atendem ao pedido e ao orçamento total."
+		response.Message = noMatchMessage
 		return response, nil
 	}
 	id, err := purchases.NewID()

@@ -31,8 +31,8 @@ O tempo máximo de processamento de um pedido é configurado por `REQUEST_TIMEOU
 1. O usuário descreve categoria, quantidade e critérios no chat.
 2. O agente decide quando chamar `buscar_produtos` e `detalhar_produto` no servidor MCP. Essas ferramentas consultam a DummyJSON.
 3. O backend consulta as opções propostas pelo agente via MCP e completa a lista de smartphones ou laptops com uma busca própria no mesmo catálogo. Quando o modelo omite categoria e quantidade em um falso `no_match`, o backend recupera somente um par explícito como `4 smartphones`. Cada opção é revalidada por ID, filtrada pelos requisitos verificáveis e calculada em centavos.
-4. A interface mostra uma proposta com validade de 15 minutos. O usuário distribui a quantidade pedida entre as opções e confirma em um botão separado.
-5. Na confirmação, o backend revalida cada produto escolhido, a quantidade exata e o orçamento total, e persiste os snapshots em transação. A requisição recebe um número `REQ-...` e aparece no histórico paginado.
+4. A interface mostra uma proposta com validade de 15 minutos. O usuário distribui pelo menos a quantidade pedida entre as opções, podendo aumentar o total até 1.000 unidades, e confirma em um botão separado.
+5. Na confirmação, o backend revalida cada produto escolhido, a quantidade mínima e o orçamento total, e persiste os snapshots em transação. A requisição recebe um número `REQ-...` e aparece no histórico paginado. Se nenhum item atender aos critérios, o agente sugere alterar o escopo.
 
 O agente não tem acesso direto ao banco. O frontend envia apenas mensagem, ID de conversa e, na confirmação, ID da proposta com IDs de produtos e quantidades. Valores financeiros enviados pelo modelo ou navegador não são usados como fonte de verdade. Se um requisito não puder ser confirmado pelo catálogo, o fluxo pede esclarecimento. O catálogo usa USD; pedidos que exigem outra moeda precisam de esclarecimento.
 
@@ -58,4 +58,4 @@ Os testes cobrem catálogo, ferramentas MCP, interpretação por ADK com modelo 
 
 ## Limites do MVP
 
-Há um agente, uma categoria por proposta e até cinco opções verificadas para distribuir a quantidade solicitada. As sessões de conversa ficam na memória da API, enquanto propostas e requisições ficam no PostgreSQL. O MVP não inclui autenticação, integrações reais de compra, RAG, filas, Kubernetes, ferramentas MCP de escrita ou avaliação automatizada de pedidos. Esses itens não são necessários para demonstrar a separação entre interpretação do modelo e validação transacional do backend.
+Há um agente, uma categoria por proposta, até cinco opções verificadas e até 1.000 unidades por requisição. As sessões de conversa ficam na memória da API, enquanto propostas e requisições ficam no PostgreSQL. O MVP não inclui autenticação, integrações reais de compra, RAG, filas, Kubernetes, ferramentas MCP de escrita ou avaliação automatizada de pedidos. Esses itens não são necessários para demonstrar a separação entre interpretação do modelo e validação transacional do backend.

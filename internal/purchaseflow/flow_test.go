@@ -187,6 +187,25 @@ func TestMixedSelection(t *testing.T) {
 	}
 }
 
+// TestNoMatchMessage orienta a alterar critérios quando a busca não encontra itens válidos.
+func TestNoMatchMessage(t *testing.T) {
+	for _, test := range []struct {
+		decision purchaseagent.Decision
+		message  string
+	}{
+		{purchaseagent.Decision{Status: "no_match", Message: "Resposta arbitrária do modelo"}, "Produto sem correspondência"},
+		{purchaseagent.Decision{Status: "select", Message: "Item encontrado", Category: "laptops", Quantity: 2, MaxUnitPrice: "1", SelectedProductID: 78}, "2 laptops até US$ 1 cada"},
+	} {
+		flow, _ := New(stubDecider{test.decision}, &stubDetails{product: catalog.Product{
+			ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99",
+		}}, &stubStore{})
+		response, err := flow.Start(context.Background(), "", test.message)
+		if err != nil || response.Type != "no_match" || response.Message != noMatchMessage {
+			t.Fatalf("resposta sem opções incorreta: %+v, %v", response, err)
+		}
+	}
+}
+
 // TestCandidateOnlyDecision valida IDs mesmo quando o modelo contradiz a própria lista.
 func TestCandidateOnlyDecision(t *testing.T) {
 	for _, status := range []string{"clarify", "no_match"} {

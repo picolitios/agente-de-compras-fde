@@ -25,18 +25,18 @@ Modelos `:free` têm limites de uso e podem receber HTTP 429 mesmo quando a chav
 
 1. O usuário descreve categoria, quantidade e critérios no chat.
 2. O agente decide quando chamar `buscar_produtos` e `detalhar_produto` no servidor MCP. Essas ferramentas consultam a DummyJSON.
-3. O backend consulta os produtos escolhidos novamente via MCP, confere os requisitos verificáveis e calcula preço unitário e total em centavos.
-4. A interface mostra uma proposta com validade de 15 minutos. Um botão separado confirma a requisição.
-5. Na confirmação, o backend revalida o produto e persiste um snapshot em transação. A requisição recebe um número `REQ-...` e aparece no histórico paginado.
+3. O backend consulta as opções propostas pelo agente via MCP, confere os requisitos verificáveis e calcula os preços em centavos.
+4. A interface mostra uma proposta com validade de 15 minutos. O usuário distribui a quantidade pedida entre as opções e confirma em um botão separado.
+5. Na confirmação, o backend revalida cada produto escolhido, a quantidade exata e o orçamento total, e persiste os snapshots em transação. A requisição recebe um número `REQ-...` e aparece no histórico paginado.
 
-O agente não tem acesso direto ao banco. O frontend envia apenas mensagem, ID de conversa e ID da proposta. Valores financeiros enviados pelo modelo ou navegador não são usados como fonte de verdade. Se um requisito não puder ser confirmado pelo catálogo, o fluxo pede esclarecimento. O catálogo usa USD; pedidos que exigem outra moeda precisam de esclarecimento.
+O agente não tem acesso direto ao banco. O frontend envia apenas mensagem, ID de conversa e, na confirmação, ID da proposta com IDs de produtos e quantidades. Valores financeiros enviados pelo modelo ou navegador não são usados como fonte de verdade. Se um requisito não puder ser confirmado pelo catálogo, o fluxo pede esclarecimento. O catálogo usa USD; pedidos que exigem outra moeda precisam de esclarecimento.
 
 ## API
 
 | Método | Rota | Uso |
 | --- | --- | --- |
 | `POST` | `/requisicoes` | Envia `{"mensagem":"...","conversa_id":""}`; o ID é opcional no primeiro pedido. |
-| `POST` | `/requisicoes/{id}/confirmar` | Confirma uma proposta sem corpo ou valores do cliente. |
+| `POST` | `/requisicoes/{id}/confirmar` | Confirma com `{"itens":[{"produto_id":78,"quantidade":1}]}`. Sem corpo, confirma a sugestão original para compatibilidade. Não aceita preços do cliente. |
 | `GET` | `/requisicoes?limit=20&offset=0` | Consulta requisições registradas. |
 | `GET` | `/requisicoes/{id}` | Consulta uma requisição pelo ID numérico. |
 | `GET` | `/health` | Verifica a disponibilidade da API e do banco. |
@@ -53,4 +53,4 @@ Os testes cobrem catálogo, ferramentas MCP, interpretação por ADK com modelo 
 
 ## Limites do MVP
 
-Há um agente, uma categoria por proposta e um item por requisição. As sessões de conversa ficam na memória da API, enquanto propostas e requisições ficam no PostgreSQL. O MVP não inclui autenticação, integrações reais de compra, RAG, filas, Kubernetes, ferramentas MCP de escrita ou avaliação automatizada de pedidos. Esses itens não são necessários para demonstrar a separação entre interpretação do modelo e validação transacional do backend.
+Há um agente, uma categoria por proposta e até cinco opções verificadas para distribuir a quantidade solicitada. As sessões de conversa ficam na memória da API, enquanto propostas e requisições ficam no PostgreSQL. O MVP não inclui autenticação, integrações reais de compra, RAG, filas, Kubernetes, ferramentas MCP de escrita ou avaliação automatizada de pedidos. Esses itens não são necessários para demonstrar a separação entre interpretação do modelo e validação transacional do backend.

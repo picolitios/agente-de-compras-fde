@@ -19,8 +19,9 @@ var numericWordPattern = regexp.MustCompile(`^[0-9][0-9.,]*$`)
 var groupedThousandsPattern = regexp.MustCompile(`^[0-9]{1,3}([.,][0-9]{3})+$`)
 
 var budgetWords = map[string]bool{
-	"sim": true, "ok": true, "claro": true, "pode": true, "aumentar": true, "aumente": true,
+	"sim": true, "ok": true, "claro": true, "pode": true, "ser": true, "aumentar": true, "aumente": true,
 	"ajuste": true, "ajustar": true, "mude": true, "mudar": true, "o": true, "a": true,
+	"fica": true, "ficar": true, "fechado": true, "em": true,
 	"valor": true, "limite": true, "preço": true, "preco": true, "orçamento": true,
 	"então": true, "entao": true, "até": true, "ate": true, "para": true, "pra": true,
 	"por": true, "favor": true, "us$": true, "usd": true, "dólar": true, "dólares": true,

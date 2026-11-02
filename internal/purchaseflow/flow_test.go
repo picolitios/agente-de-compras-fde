@@ -463,7 +463,7 @@ func TestSingularCarBudgetContinuation(t *testing.T) {
 	if err != nil || first.Type != "no_match" {
 		t.Fatalf("pedido inicial inesperado: %+v, %v", first, err)
 	}
-	second, err := flow.Start(context.Background(), first.ConversationID, "aumente até 25 mil dolares")
+	second, err := flow.Start(context.Background(), first.ConversationID, "pode ser 25000,00 entao")
 	if err != nil || second.Type != "proposal" || len(second.Products) != 1 ||
 		second.Proposal.Requirements.Quantity != 1 {
 		t.Fatalf("primeiro ajuste inesperado: %+v, %v", second, err)
@@ -684,6 +684,9 @@ func TestBudgetFollowupParsing(t *testing.T) {
 		{"aumente o valor então até 25 mil dolares", "25000"},
 		{"sim, até US$ 25.000", "25000"},
 		{"aumente para 24999,99 dólares", "24999.99"},
+		{"pode ser 25000,00 entao", "25000"},
+		{"pode ficar em 25000,00", "25000"},
+		{"fechado em 25000,00", "25000"},
 		{"sim", "24999.99"},
 	} {
 		got, ok := budgetFollowup(test.message, pending)
@@ -691,7 +694,7 @@ func TestBudgetFollowupParsing(t *testing.T) {
 			t.Errorf("ajuste %q: esperado %q, recebeu %q (ok=%t)", test.message, test.want, got, ok)
 		}
 	}
-	for _, message := range []string{"não aumente", "quero 2 carros até 25 mil", "somente carros elétricos", "o", ""} {
+	for _, message := range []string{"não aumente", "quero 2 carros até 25 mil", "somente carros elétricos", "pode ser 25000,00 com carro elétrico", "o", ""} {
 		if got, ok := budgetFollowup(message, pending); ok {
 			t.Errorf("mensagem não relacionada %q aceita como preço %q", message, got)
 		}

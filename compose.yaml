@@ -21,7 +21,7 @@ services:
       MCP_PORT: "8081"
       CATALOG_TIMEOUT: ${CATALOG_TIMEOUT:-5s}
     ports:
-      - "${MCP_PORT:-8081}:8081"
+      - "127.0.0.1:${MCP_PORT:-8081}:8081"
     restart: unless-stopped
 
   api:
@@ -35,7 +35,8 @@ services:
         condition: service_started
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Defina OPENROUTER_API_KEY no .env}
-      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o-mini}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemma-4-31b-it:free}
+      OPENROUTER_FALLBACK_MODEL: ${OPENROUTER_FALLBACK_MODEL-openrouter/free}
       DATABASE_URL: ${DATABASE_URL:?Defina DATABASE_URL no .env}
       MCP_URL: http://mcp:8081/mcp
       API_PORT: "8080"
@@ -43,7 +44,7 @@ services:
       CATALOG_TIMEOUT: ${CATALOG_TIMEOUT:-5s}
       MAX_MODEL_CALLS: ${MAX_MODEL_CALLS:-8}
     ports:
-      - "${API_PORT:-8080}:8080"
+      - "127.0.0.1:${API_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
       interval: 5s
@@ -58,7 +59,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "${FRONTEND_PORT:-5173}:80"
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:80"
     restart: unless-stopped
 
 volumes:

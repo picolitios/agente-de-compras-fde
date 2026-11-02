@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/picolitios/agente-de-compras-fde/internal/httpapi"
 	"github.com/picolitios/agente-de-compras-fde/internal/mcpclient"
+	"github.com/picolitios/agente-de-compras-fde/internal/openrouter"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseagent"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseflow"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
@@ -24,6 +25,7 @@ import (
 type config struct {
 	apiKey         string
 	model          string
+	fallbackModel  string
 	databaseURL    string
 	mcpURL         string
 	port           int
@@ -34,10 +36,13 @@ type config struct {
 
 // loadConfig rejeita segredos ausentes e valores que impediriam inicialização segura.
 func loadConfig() (config, error) {
-	c := config{apiKey: os.Getenv("OPENROUTER_API_KEY"), model: os.Getenv("OPENROUTER_MODEL"),
+	c := config{apiKey: os.Getenv("OPENROUTER_API_KEY"), model: os.Getenv("OPENROUTER_MODEL"), fallbackModel: os.Getenv("OPENROUTER_FALLBACK_MODEL"),
 		databaseURL: os.Getenv("DATABASE_URL"), mcpURL: os.Getenv("MCP_URL")}
 	if c.apiKey == "" || c.apiKey == "replace-me" || c.model == "" || c.databaseURL == "" || c.mcpURL == "" {
 		return config{}, errors.New("OPENROUTER_API_KEY, OPENROUTER_MODEL, DATABASE_URL e MCP_URL são obrigatórios")
+	}
+	if c.fallbackModel == c.model {
+		return config{}, errors.New("OPENROUTER_FALLBACK_MODEL deve ser diferente de OPENROUTER_MODEL")
 	}
 	var err error
 	c.port, err = strconv.Atoi(os.Getenv("API_PORT"))
@@ -83,9 +88,14 @@ func main() {
 		logger.Error("migrations falharam", "error_type", fmt.Sprintf("%T", err))
 		os.Exit(1)
 	}
+	// O transporte adiciona fallback gratuito ao corpo OpenRouter sem alterar o agente ADK.
+	modelHTTPClient := &http.Client{Timeout: cfg.requestTimeout}
+	if cfg.fallbackModel != "" {
+		modelHTTPClient.Transport = openrouter.FallbackTransport{Primary: cfg.model, Fallback: cfg.fallbackModel}
+	}
 	model, err := openaimodel.NewModel(startupCtx, cfg.model, &openaimodel.ClientConfig{
 		APIKey: cfg.apiKey, BaseURL: "https://openrouter.ai/api/v1", API: openaimodel.APIChatCompletions,
-		HTTPClient: &http.Client{Timeout: cfg.requestTimeout},
+		HTTPClient: modelHTTPClient,
 	})
 	if err != nil {
 		logger.Error("configurar modelo", "error_type", fmt.Sprintf("%T", err))

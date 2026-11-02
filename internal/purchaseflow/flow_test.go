@@ -18,6 +18,21 @@ func (s stubDecider) Decide(context.Context, string, string) (purchaseagent.Deci
 	return s.decision, nil
 }
 
+type sequenceDecider struct {
+	decisions []purchaseagent.Decision
+	messages  []string
+}
+
+func (s *sequenceDecider) Decide(_ context.Context, _, message string) (purchaseagent.Decision, error) {
+	s.messages = append(s.messages, message)
+	if len(s.decisions) == 0 {
+		return purchaseagent.Decision{Status: "clarify", Message: "Esclareça o pedido"}, nil
+	}
+	decision := s.decisions[0]
+	s.decisions = s.decisions[1:]
+	return decision, nil
+}
+
 type stubDetails struct {
 	product        catalog.Product
 	products       map[int]catalog.Product
@@ -404,5 +419,114 @@ func TestNoMatchTotalBudget(t *testing.T) {
 	if err != nil || response.Type != "no_match" || !strings.Contains(response.Message, "US$ 5999,97") ||
 		!strings.Contains(response.Message, "orçamento total de US$ 5000,00") {
 		t.Fatalf("diagnóstico do orçamento total inesperado: %+v, %v", response, err)
+	}
+}
+
+// TestBudgetContinuation reaproveita o produto após um ajuste sem confiar na resposta do modelo.
+func TestBudgetContinuation(t *testing.T) {
+	vehicles := []catalog.Product{
+		{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"},
+		{ID: 170, Title: "Charger", Category: "vehicle", Price: "32999.99"},
+	}
+	decider := &sequenceDecider{decisions: []purchaseagent.Decision{
+		{Status: "no_match", Message: "Sem carros"},
+		{Status: "clarify", Message: "Qual veículo?"},
+	}}
+	details := &stubDetails{products: map[int]catalog.Product{169: vehicles[0], 170: vehicles[1]},
+		searchByTerm: map[string][]catalog.Product{"category:vehicle": vehicles}}
+	flow, _ := New(decider, details, &stubStore{})
+	first, err := flow.Start(context.Background(), "", "1 carro até 100 dólares")
+	if err != nil || first.Type != "no_match" {
+		t.Fatalf("primeira resposta inesperada: %+v, %v", first, err)
+	}
+	second, err := flow.Start(context.Background(), first.ConversationID, "aumente o valor então até 25 mil dolares")
+	if err != nil || second.Type != "proposal" || second.ConversationID != first.ConversationID ||
+		len(second.Products) != 1 || second.Products[0].ID != 169 ||
+		second.Proposal.Requirements.MaxUnitCents == nil || *second.Proposal.Requirements.MaxUnitCents != 2500000 ||
+		decider.messages[1] != "1 carro até US$ 25000 cada" {
+		t.Fatalf("continuidade do pedido falhou: %+v, mensagens: %+v, erro: %v", second, decider.messages, err)
+	}
+}
+
+// TestBudgetAcceptance usa o menor preço sugerido quando a resposta é apenas afirmativa.
+func TestBudgetAcceptance(t *testing.T) {
+	product := catalog.Product{ID: 169, Title: "Dodge Hornet", Category: "vehicle", Price: "24999.99"}
+	decider := &sequenceDecider{decisions: []purchaseagent.Decision{{Status: "no_match"}, {Status: "no_match"}}}
+	flow, _ := New(decider, &stubDetails{product: product,
+		searchByTerm: map[string][]catalog.Product{"category:vehicle": {product}}}, &stubStore{})
+	first, err := flow.Start(context.Background(), "", "1 carro até 100 dólares")
+	if err != nil || first.Type != "no_match" {
+		t.Fatalf("primeira resposta inesperada: %+v, %v", first, err)
+	}
+	second, err := flow.Start(context.Background(), first.ConversationID, "sim, pode aumentar")
+	if err != nil || second.Type != "proposal" || len(second.Products) != 1 ||
+		second.Proposal.Requirements.MaxUnitCents == nil || *second.Proposal.Requirements.MaxUnitCents != 2499999 {
+		t.Fatalf("aceite do menor preço falhou: %+v, %v", second, err)
+	}
+}
+
+// TestBudgetContinuationIsScoped não aplica um ajuste antigo a outra conversa ou a um novo produto.
+func TestBudgetContinuationIsScoped(t *testing.T) {
+	product := catalog.Product{ID: 169, Title: "Dodge Hornet", Category: "vehicle", Price: "24999.99"}
+	decider := &sequenceDecider{decisions: []purchaseagent.Decision{{Status: "no_match"},
+		{Status: "clarify", Message: "Qual produto?"}, {Status: "clarify", Message: "Qual produto?"}}}
+	flow, _ := New(decider, &stubDetails{searchByTerm: map[string][]catalog.Product{"category:vehicle": {product}}}, &stubStore{})
+	first, err := flow.Start(context.Background(), "", "1 carro até 100 dólares")
+	if err != nil || first.Type != "no_match" {
+		t.Fatalf("primeira resposta inesperada: %+v, %v", first, err)
+	}
+	other, err := flow.Start(context.Background(), "", "sim")
+	if err != nil || other.Type != "clarify" || decider.messages[1] != "sim" {
+		t.Fatalf("contexto vazou para outra conversa: %+v, %v", other, err)
+	}
+	newRequest, err := flow.Start(context.Background(), first.ConversationID, "quero um novo produto")
+	if err != nil || newRequest.Type != "clarify" || decider.messages[2] != "quero um novo produto" {
+		t.Fatalf("pedido novo herdou contexto antigo: %+v, %v", newRequest, err)
+	}
+}
+
+// TestBudgetContinuationExpires não aplica uma sugestão vencida à conversa.
+func TestBudgetContinuationExpires(t *testing.T) {
+	product := catalog.Product{ID: 169, Title: "Dodge Hornet", Category: "vehicle", Price: "24999.99"}
+	decider := &sequenceDecider{decisions: []purchaseagent.Decision{{Status: "no_match"},
+		{Status: "clarify", Message: "Informe o pedido"}}}
+	flow, _ := New(decider, &stubDetails{searchByTerm: map[string][]catalog.Product{
+		"category:vehicle": {product},
+	}}, &stubStore{})
+	first, err := flow.Start(context.Background(), "", "1 carro até 100 dólares")
+	if err != nil || first.Type != "no_match" {
+		t.Fatalf("primeira resposta inesperada: %+v, %v", first, err)
+	}
+	flow.pendingMu.Lock()
+	pending := flow.pending[first.ConversationID]
+	pending.expiresAt = time.Now().Add(-time.Second)
+	flow.pending[first.ConversationID] = pending
+	flow.pendingMu.Unlock()
+	second, err := flow.Start(context.Background(), first.ConversationID, "sim")
+	if err != nil || second.Type != "clarify" || decider.messages[1] != "sim" {
+		t.Fatalf("sugestão vencida reaproveitada: %+v, %v", second, err)
+	}
+}
+
+// TestBudgetFollowupParsing aceita formatos comuns de USD sem absorver critérios novos.
+func TestBudgetFollowupParsing(t *testing.T) {
+	pending := pendingBudget{minimumCents: 2499999}
+	for _, test := range []struct {
+		message, want string
+	}{
+		{"aumente o valor então até 25 mil dolares", "25000"},
+		{"sim, até US$ 25.000", "25000"},
+		{"aumente para 24999,99 dólares", "24999.99"},
+		{"sim", "24999.99"},
+	} {
+		got, ok := budgetFollowup(test.message, pending)
+		if !ok || got != test.want {
+			t.Errorf("ajuste %q: esperado %q, recebeu %q (ok=%t)", test.message, test.want, got, ok)
+		}
+	}
+	for _, message := range []string{"não aumente", "quero 2 carros até 25 mil", "somente carros elétricos", "o", ""} {
+		if got, ok := budgetFollowup(message, pending); ok {
+			t.Errorf("mensagem não relacionada %q aceita como preço %q", message, got)
+		}
 	}
 }

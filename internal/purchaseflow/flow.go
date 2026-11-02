@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
@@ -54,9 +55,11 @@ type Response struct {
 
 // Flow coordena interpretação, revalidação e confirmação sem dar escrita ao LLM.
 type Flow struct {
-	decider Decider
-	details Details
-	store   Store
+	decider   Decider
+	details   Details
+	store     Store
+	pendingMu sync.Mutex
+	pending   map[string]pendingBudget
 }
 
 // New exige as três dependências necessárias ao fluxo.
@@ -64,7 +67,7 @@ func New(decider Decider, details Details, store Store) (*Flow, error) {
 	if decider == nil || details == nil || store == nil {
 		return nil, errors.New("dependências do fluxo ausentes")
 	}
-	return &Flow{decider: decider, details: details, store: store}, nil
+	return &Flow{decider: decider, details: details, store: store, pending: make(map[string]pendingBudget)}, nil
 }
 
 // Start executa o agente e cria apenas uma proposta quando todos os critérios são verificáveis.
@@ -80,11 +83,27 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 			return Response{}, err
 		}
 	}
+	// Uma resposta curta de orçamento reaproveita somente categoria e quantidade já verificadas nesta conversa.
+	var previous pendingBudget
+	var adjustedLimit string
+	if saved, ok := f.pendingFor(conversationID); ok {
+		if limit, recognized := budgetFollowup(message, saved); recognized {
+			previous, adjustedLimit = saved, limit
+			message = standaloneBudgetRequest(saved, limit)
+		} else {
+			f.clearPending(conversationID)
+		}
+	}
 	decision, err := f.decider.Decide(ctx, conversationID, message)
 	if err != nil {
 		return Response{}, fmt.Errorf("%w: %w", ErrAgent, err)
 	}
 	decision.Category = canonicalCategory(decision.Category)
+	if adjustedLimit != "" {
+		decision.Category, decision.Quantity = previous.category, previous.quantity
+		decision.MaxUnitPrice, decision.MaxTotalPrice = adjustedLimit, ""
+		decision.RequiredBrand, decision.RequiredFeatures, decision.Unverifiable = "", nil, nil
+	}
 	// Recupera pedidos explícitos quando o modelo pequeno responde clarify ou um falso no_match.
 	explicitCategory := false
 	if decision.Status == "no_match" || decision.Status == "clarify" {
@@ -117,10 +136,13 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	if decision.Status == "clarify" || decision.Status == "no_match" {
 		response.Type = decision.Status
 		if decision.Status == "no_match" {
-			response.Message, err = f.explainNoMatch(ctx, message, decision, nil)
+			var diagnosis noMatchResult
+			diagnosis, err = f.explainNoMatch(ctx, message, decision, nil)
 			if err != nil {
 				return Response{}, err
 			}
+			response.Message = diagnosis.message
+			f.rememberPending(conversationID, decision.Category, decision.Quantity, diagnosis.suggestedUnitCents)
 		}
 		return response, nil
 	}
@@ -223,10 +245,13 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	}
 	if suggested.ProductID == 0 {
 		response.Type = "no_match"
-		response.Message, err = f.explainNoMatch(ctx, message, decision, searched)
+		var diagnosis noMatchResult
+		diagnosis, err = f.explainNoMatch(ctx, message, decision, searched)
 		if err != nil {
 			return Response{}, err
 		}
+		response.Message = diagnosis.message
+		f.rememberPending(conversationID, decision.Category, decision.Quantity, diagnosis.suggestedUnitCents)
 		return response, nil
 	}
 	id, err := purchases.NewID()
@@ -242,6 +267,7 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	if err := f.store.SaveProposal(ctx, proposal); err != nil {
 		return Response{}, fmt.Errorf("salvar proposta: %w", err)
 	}
+	f.clearPending(conversationID)
 	response.Type = "proposal"
 	unitNoun := "unidades"
 	if requirements.Quantity == 1 {

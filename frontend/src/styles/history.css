@@ -1,0 +1,142 @@
+.history-panel {
+  padding: 36px 24px;
+  background: #f5f3ee;
+  border-left: 1px solid #e3e5dd;
+}
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 26px;
+}
+.section-header h2 {
+  font-size: 23px;
+  margin: 7px 0 0;
+}
+.icon-button {
+  border: 1px solid #dfe5dc;
+  background: #fff;
+  color: #3b7656;
+  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  font-size: 20px;
+}
+.icon-button:hover {
+  background: #eff6ee;
+}
+.muted {
+  color: #78857a;
+  font-size: 13px;
+}
+.history-empty {
+  padding: 40px 15px;
+  text-align: center;
+  border: 1px dashed #d6ddd2;
+  border-radius: 13px;
+  color: #829086;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.history-empty span {
+  display: block;
+  font-size: 30px;
+  color: #83a58b;
+  margin-bottom: 10px;
+}
+.history-empty p {
+  margin: 0;
+}
+.history-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+.history-list > li {
+  background: #fff;
+  border: 1px solid #e1e6dc;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.history-list summary {
+  padding: 14px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  list-style: none;
+}
+.history-list summary::-webkit-details-marker {
+  display: none;
+}
+.history-list summary span {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.history-list summary strong {
+  font:
+    800 13px Manrope,
+    sans-serif;
+  color: #244c37;
+}
+.history-list summary small {
+  font-size: 11px;
+  color: #8a978b;
+}
+.history-list summary b {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.history-detail {
+  border-top: 1px solid #eef0eb;
+  padding: 12px 14px 15px;
+  font-size: 11px;
+  color: #68756b;
+  line-height: 1.55;
+}
+.history-detail p {
+  margin: 0 0 10px;
+  overflow-wrap: anywhere;
+}
+.history-detail ul {
+  padding-left: 16px;
+  margin: 0 0 11px;
+}
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  margin-top: 19px;
+  font-size: 11px;
+  color: #738075;
+}
+.pagination button {
+  border: 1px solid #d6ded2;
+  background: #fff;
+  border-radius: 7px;
+  padding: 7px 9px;
+  color: #3a6a4c;
+  font-size: 11px;
+}
+.pagination button:disabled {
+  opacity: 0.4;
+}
+.inline-error {
+  margin: 0;
+}
+.inline-error p {
+  margin: 0 0 8px;
+}
+.inline-error button {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: #8d3d29;
+  text-decoration: underline;
+}

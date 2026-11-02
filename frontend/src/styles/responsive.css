@@ -1,0 +1,50 @@
+@media (max-width: 950px) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr) 310px;
+  }
+  .history-panel {
+    padding: 29px 16px;
+  }
+}
+@media (max-width: 720px) {
+  .app-header {
+    height: 72px;
+    padding: 0 18px;
+  }
+  .brand-copy span {
+    display: none;
+  }
+  .demo-badge {
+    font-size: 0;
+    padding: 8px;
+    width: 30px;
+    height: 30px;
+    justify-content: center;
+  }
+  .workspace {
+    display: flex;
+    flex-direction: column;
+  }
+  .chat-panel {
+    min-height: calc(100vh - 72px);
+  }
+  .chat-heading {
+    padding: 25px 20px 20px;
+  }
+  .conversation {
+    max-height: none;
+    min-height: 400px;
+    padding: 23px 18px;
+  }
+  .composer-wrap {
+    padding: 14px 16px 18px;
+  }
+  .history-panel {
+    border-left: 0;
+    border-top: 1px solid #e3e5dd;
+    padding: 30px 18px;
+  }
+  .message-content {
+    max-width: calc(100% - 42px);
+  }
+}

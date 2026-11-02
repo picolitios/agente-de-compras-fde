@@ -30,7 +30,7 @@ O tempo máximo de processamento de um pedido é configurado por `REQUEST_TIMEOU
 
 1. O usuário descreve categoria, quantidade e critérios no chat.
 2. O agente decide quando chamar `buscar_produtos` e `detalhar_produto` no servidor MCP. Essas ferramentas consultam a DummyJSON.
-3. O backend consulta as opções propostas pelo agente via MCP, confere os requisitos verificáveis e calcula os preços em centavos.
+3. O backend consulta as opções propostas pelo agente via MCP e completa a lista de smartphones ou laptops com uma busca própria no mesmo catálogo. Quando o modelo omite categoria e quantidade em um falso `no_match`, o backend recupera somente um par explícito como `4 smartphones`. Cada opção é revalidada por ID, filtrada pelos requisitos verificáveis e calculada em centavos.
 4. A interface mostra uma proposta com validade de 15 minutos. O usuário distribui a quantidade pedida entre as opções e confirma em um botão separado.
 5. Na confirmação, o backend revalida cada produto escolhido, a quantidade exata e o orçamento total, e persiste os snapshots em transação. A requisição recebe um número `REQ-...` e aparece no histórico paginado.
 

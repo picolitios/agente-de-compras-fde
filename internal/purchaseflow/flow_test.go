@@ -18,8 +18,9 @@ func (s stubDecider) Decide(context.Context, string, string) (purchaseagent.Deci
 }
 
 type stubDetails struct {
-	product  catalog.Product
-	products map[int]catalog.Product
+	product        catalog.Product
+	products       map[int]catalog.Product
+	searchProducts []catalog.Product
 }
 
 func (s *stubDetails) Detail(_ context.Context, id int) (catalog.Product, error) {
@@ -30,6 +31,10 @@ func (s *stubDetails) Detail(_ context.Context, id int) (catalog.Product, error)
 		return catalog.Product{}, catalog.ErrNotFound
 	}
 	return s.product, nil
+}
+
+func (s *stubDetails) Search(context.Context, string) (catalog.SearchResult, error) {
+	return catalog.SearchResult{Products: s.searchProducts, Total: len(s.searchProducts)}, nil
 }
 
 type stubStore struct {
@@ -201,5 +206,75 @@ func TestCandidateOnlyDecision(t *testing.T) {
 				t.Fatalf("alternativas locais inválidas: %+v, %v", response, err)
 			}
 		})
+	}
+}
+
+// TestCatalogCompletesSmartphoneOptions preserva preço e categoria mesmo quando o modelo só indica o primeiro iPhone.
+func TestCatalogCompletesSmartphoneOptions(t *testing.T) {
+	decision := purchaseagent.Decision{Status: "select", Message: "iPhone encontrado", Category: "smartphones", Quantity: 4,
+		MaxUnitPrice: "1000", SelectedProductID: 121}
+	products := []catalog.Product{
+		{ID: 101, Title: "Fone Apple", Category: "mobile-accessories", Price: "549.99"},
+		{ID: 121, Title: "iPhone 5s", Category: "smartphones", Price: "199.99", Brand: "Apple"},
+		{ID: 122, Title: "iPhone 6", Category: "smartphones", Price: "299.99", Brand: "Apple"},
+		{ID: 123, Title: "iPhone 13 Pro", Category: "smartphones", Price: "1099.99", Brand: "Apple"},
+		{ID: 124, Title: "iPhone X", Category: "smartphones", Price: "899.99", Brand: "Apple"},
+		{ID: 125, Title: "Oppo A57", Category: "smartphones", Price: "249.99", Brand: "Oppo"},
+		{ID: 126, Title: "Oppo F19 Pro Plus", Category: "smartphones", Price: "399.99", Brand: "Oppo"},
+	}
+	details := &stubDetails{products: map[int]catalog.Product{}, searchProducts: products}
+	for _, product := range products {
+		details.products[product.ID] = product
+	}
+	flow, _ := New(stubDecider{decision}, details, &stubStore{})
+	response, err := flow.Start(context.Background(), "", "4 smartphones até US$ 1000 cada")
+	if err != nil || response.Type != "proposal" || len(response.Products) != 5 {
+		t.Fatalf("lista de smartphones incompleta: %+v, %v", response, err)
+	}
+	for index, id := range []int{121, 122, 124, 125, 126} {
+		if response.Products[index].ID != id {
+			t.Fatalf("opção %d: esperado %d, recebeu %d", index, id, response.Products[index].ID)
+		}
+	}
+}
+
+// TestCatalogOverridesFalseNoMatch só cria proposta após validar um resultado real da busca.
+func TestCatalogOverridesFalseNoMatch(t *testing.T) {
+	decision := purchaseagent.Decision{Status: "no_match", Message: "Sem opções", Category: "smartphone", Quantity: 2,
+		MaxUnitPrice: "300", SelectedProductID: 0}
+	product := catalog.Product{ID: 121, Title: "iPhone 5s", Category: "smartphones", Price: "199.99"}
+	details := &stubDetails{product: product, searchProducts: []catalog.Product{product}}
+	flow, _ := New(stubDecider{decision}, details, &stubStore{})
+	response, err := flow.Start(context.Background(), "", "2 smartphones até US$ 300 cada")
+	if err != nil || response.Type != "proposal" || len(response.Products) != 1 {
+		t.Fatalf("resultado real ignorado: %+v, %v", response, err)
+	}
+}
+
+// TestCatalogRecoversExplicitRequest cobre o modelo que omite categoria e quantidade.
+func TestCatalogRecoversExplicitRequest(t *testing.T) {
+	decision := purchaseagent.Decision{Status: "no_match", Message: "Sem opções", MaxUnitPrice: "200"}
+	products := []catalog.Product{
+		{ID: 101, Title: "Carregador", Category: "mobile-accessories", Price: "19.99"},
+		{ID: 121, Title: "iPhone 5s", Category: "smartphones", Price: "199.99"},
+		{ID: 122, Title: "iPhone 6", Category: "smartphones", Price: "299.99"},
+		{ID: 128, Title: "Realme C35", Category: "smartphones", Price: "149.99"},
+	}
+	details := &stubDetails{products: map[int]catalog.Product{}, searchProducts: products}
+	for _, product := range products {
+		details.products[product.ID] = product
+	}
+	store := &stubStore{}
+	flow, _ := New(stubDecider{decision}, details, store)
+	response, err := flow.Start(context.Background(), "", "4 smartphones de até 200 dólares cada")
+	if err != nil || response.Type != "proposal" || len(response.Products) != 2 ||
+		response.Products[0].ID != 121 || response.Products[1].ID != 128 || response.Proposal.Requirements.Quantity != 4 {
+		t.Fatalf("pedido explícito não recuperado: %+v, %v", response, err)
+	}
+	store = &stubStore{}
+	flow, _ = New(stubDecider{decision}, details, store)
+	response, err = flow.Start(context.Background(), "", "4 smartphones e 2 laptops")
+	if err != nil || response.Type != "no_match" || store.proposal.ID != "" {
+		t.Fatalf("pedido misto interpretado indevidamente: %+v, %v", response, err)
 	}
 }

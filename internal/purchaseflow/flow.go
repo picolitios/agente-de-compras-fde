@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,8 +15,9 @@ import (
 )
 
 var (
-	ErrCatalog = errors.New("catálogo indisponível")
-	ErrAgent   = errors.New("agente indisponível")
+	ErrCatalog          = errors.New("catálogo indisponível")
+	ErrAgent            = errors.New("agente indisponível")
+	knownProductPattern = regexp.MustCompile(`(?i)\b([1-9][0-9]{0,2})\s+(smartphones?|celulares?|laptops?|notebooks?)\b`)
 )
 
 // Decider deixa a escolha de ferramentas e produtos a cargo do agente ADK.
@@ -25,6 +28,7 @@ type Decider interface {
 // Details busca dados atuais por MCP para todas as validações críticas.
 type Details interface {
 	Detail(context.Context, int) (catalog.Product, error)
+	Search(context.Context, string) (catalog.SearchResult, error)
 }
 
 // Store permite testar o fluxo sem depender de um banco ou modelo real.
@@ -77,17 +81,28 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	if err != nil {
 		return Response{}, fmt.Errorf("%w: %w", ErrAgent, err)
 	}
+	decision.Category = canonicalCategory(decision.Category)
+	// Recupera categoria e quantidade explícitas quando o modelo pequeno as omite em um falso no_match.
+	if decision.Status == "no_match" && (decision.Category == "" || decision.Quantity == 0) {
+		if category, quantity, ok := knownCategoryQuantity(message); ok &&
+			(decision.Category == "" || decision.Category == category) &&
+			(decision.Quantity == 0 || decision.Quantity == quantity) {
+			decision.Category, decision.Quantity = category, quantity
+		}
+	}
 	response := Response{Type: decision.Status, Message: decision.Message, ConversationID: conversationID}
 	// IDs fornecidos mesmo em uma resposta contraditória passam pela validação real do catálogo.
+	searchTerm := catalogSearchTerm(decision.Category)
 	if (decision.Status == "clarify" || decision.Status == "no_match") && decision.Category != "" && decision.Quantity > 0 &&
-		len(decision.Unverifiable) == 0 && (decision.SelectedProductID > 0 || len(decision.CandidateProductIDs) > 0) {
+		len(decision.Unverifiable) == 0 && (decision.SelectedProductID > 0 || len(decision.CandidateProductIDs) > 0 ||
+		(decision.Status == "no_match" && searchTerm != "")) {
 		decision.Status = "select"
 	}
 	if decision.Status == "clarify" || decision.Status == "no_match" {
 		return response, nil
 	}
 	if decision.Status != "select" || decision.Quantity <= 0 || decision.Quantity > 1000 || decision.Category == "" ||
-		(decision.SelectedProductID <= 0 && len(decision.CandidateProductIDs) == 0) || len(decision.CandidateProductIDs) > 20 {
+		(decision.SelectedProductID <= 0 && len(decision.CandidateProductIDs) == 0 && searchTerm == "") || len(decision.CandidateProductIDs) > 20 {
 		return Response{}, fmt.Errorf("%w: seleção inválida", ErrAgent)
 	}
 	if len(decision.Unverifiable) > 0 || mentionsOtherCurrency(message) {
@@ -142,6 +157,36 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 			optionSnapshots = append(optionSnapshots, snapshot)
 		}
 	}
+	// A busca MCP completa a lista limitada pelo modelo; cada produto continua sendo revalidado pelo ID.
+	if len(options) < 5 && searchTerm != "" {
+		found, err := f.details.Search(ctx, searchTerm)
+		if err != nil {
+			return Response{}, fmt.Errorf("%w: %v", ErrCatalog, err)
+		}
+		for _, candidate := range found.Products {
+			if len(options) == 5 {
+				break
+			}
+			if candidate.ID <= 0 || seen[candidate.ID] {
+				continue
+			}
+			seen[candidate.ID] = true
+			if _, err := purchases.ValidateSelection(optionRequirements, candidate); err != nil {
+				continue
+			}
+			current, err := f.details.Detail(ctx, candidate.ID)
+			if errors.Is(err, catalog.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return Response{}, fmt.Errorf("%w: %v", ErrCatalog, err)
+			}
+			if snapshot, err := purchases.ValidateSelection(optionRequirements, current); err == nil {
+				options = append(options, current)
+				optionSnapshots = append(optionSnapshots, snapshot)
+			}
+		}
+	}
 	var suggested purchases.Item
 	for _, candidate := range options {
 		item, err := purchases.ValidateSelection(requirements, candidate)
@@ -174,6 +219,50 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	response.Products = options
 	response.Proposal = &proposal
 	return response, nil
+}
+
+// catalogSearchTerm usa termos que a busca textual da DummyJSON reconhece para as categorias do MVP.
+func catalogSearchTerm(category string) string {
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "smartphones":
+		return "smartphone"
+	case "laptops":
+		return "laptop"
+	default:
+		return ""
+	}
+}
+
+// canonicalCategory aceita nomes singulares usuais sem relaxar a categoria usada na validação.
+func canonicalCategory(category string) string {
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "smartphone", "smartphones", "celular", "celulares":
+		return "smartphones"
+	case "laptop", "laptops", "notebook", "notebooks":
+		return "laptops"
+	default:
+		return category
+	}
+}
+
+// knownCategoryQuantity aceita apenas um par explícito de quantidade e categoria do MVP.
+func knownCategoryQuantity(message string) (string, int, bool) {
+	matches := knownProductPattern.FindAllStringSubmatch(message, 2)
+	if len(matches) != 1 {
+		return "", 0, false
+	}
+	quantity, err := strconv.Atoi(matches[0][1])
+	if err != nil {
+		return "", 0, false
+	}
+	switch strings.ToLower(matches[0][2]) {
+	case "smartphone", "smartphones", "celular", "celulares":
+		return "smartphones", quantity, true
+	case "laptop", "laptops", "notebook", "notebooks":
+		return "laptops", quantity, true
+	default:
+		return "", 0, false
+	}
 }
 
 // Confirm consulta o catálogo novamente e deixa o repositório fazer a gravação atômica.

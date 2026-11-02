@@ -30,6 +30,25 @@ func TestSearch(t *testing.T) {
 	}
 }
 
+// TestCategorySearch consulta todos os produtos de uma categoria sem confundir nomes traduzidos.
+func TestCategorySearch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/products/category/vehicle" || r.URL.Query().Get("limit") != "0" {
+			t.Errorf("consulta de categoria inesperada: %s", r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"products":[{"id":1,"title":"Car","category":"vehicle","price":24999.99}],"total":1}`))
+	}))
+	defer server.Close()
+	client, _ := NewClient(server.URL, server.Client())
+	result, err := client.Search(context.Background(), "category:vehicle")
+	if err != nil || result.Total != 1 {
+		t.Fatalf("categoria inesperada: %+v, %v", result, err)
+	}
+	if _, err := client.Search(context.Background(), "category:../private"); err == nil {
+		t.Fatal("categoria inválida aceita")
+	}
+}
+
 // TestSearchErrors verifica entrada inválida e falhas que não devem virar lista vazia.
 func TestSearchErrors(t *testing.T) {
 	cases := []struct {

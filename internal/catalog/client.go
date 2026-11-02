@@ -8,11 +8,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
 const maxResponseBytes = 1 << 20
+
+var categorySlug = regexp.MustCompile(`^[a-z][a-z-]{0,79}$`)
 
 var ErrNotFound = errors.New("produto não encontrado")
 
@@ -78,15 +81,26 @@ func NewClient(baseURL string, httpClient *http.Client) (*Client, error) {
 	return &Client{base: base, http: httpClient}, nil
 }
 
-// Search busca produtos pelo termo e rejeita respostas externas malformadas.
+// Search busca por texto ou por uma categoria explícita e rejeita respostas externas malformadas.
 func (c *Client) Search(ctx context.Context, term string) (SearchResult, error) {
 	term = strings.TrimSpace(term)
 	if term == "" || len(term) > 120 {
 		return SearchResult{}, errors.New("termo deve ter entre 1 e 120 caracteres")
 	}
-	u := c.base.JoinPath("products", "search")
+	var u *url.URL
+	if category, ok := strings.CutPrefix(term, "category:"); ok {
+		if !categorySlug.MatchString(category) {
+			return SearchResult{}, errors.New("categoria inválida")
+		}
+		u = c.base.JoinPath("products", "category", category)
+	} else {
+		u = c.base.JoinPath("products", "search")
+		q := u.Query()
+		q.Set("q", term)
+		u.RawQuery = q.Encode()
+	}
 	q := u.Query()
-	q.Set("q", term)
+	q.Set("limit", "0")
 	u.RawQuery = q.Encode()
 	var result SearchResult
 	if err := c.getJSON(ctx, u.String(), &result); err != nil {

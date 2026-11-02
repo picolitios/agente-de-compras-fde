@@ -41,7 +41,7 @@ func NewServer(source Catalog) (*mcp.Server, error) {
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "purchase-catalog", Version: "1.0.0"}, nil)
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "buscar_produtos", Description: "Busca produtos no catálogo de demonstração pelo termo informado.",
+		Name: "buscar_produtos", Description: "Busca textual no catálogo em inglês. Use termos curtos no singular, como laptop para laptops e phone para celulares; tente outro termo antes de concluir que não há resultados.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input SearchInput) (*mcp.CallToolResult, SearchOutput, error) {
 		if strings.TrimSpace(input.Term) == "" {
 			return nil, SearchOutput{}, errors.New("termo obrigatório")

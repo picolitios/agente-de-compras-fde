@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -19,13 +20,17 @@ import (
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseagent"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseflow"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
+	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/model/openaimodel"
 )
 
 type config struct {
+	provider       string
 	apiKey         string
 	model          string
 	fallbackModel  string
+	ollamaModel    string
+	ollamaBaseURL  string
 	databaseURL    string
 	mcpURL         string
 	port           int
@@ -34,15 +39,39 @@ type config struct {
 	maxModelCalls  int
 }
 
-// loadConfig rejeita segredos ausentes e valores que impediriam inicialização segura.
+// loadConfig valida o provedor escolhido sem exigir chave externa no modo local.
 func loadConfig() (config, error) {
-	c := config{apiKey: os.Getenv("OPENROUTER_API_KEY"), model: os.Getenv("OPENROUTER_MODEL"), fallbackModel: os.Getenv("OPENROUTER_FALLBACK_MODEL"),
+	c := config{provider: os.Getenv("MODEL_PROVIDER"), apiKey: os.Getenv("OPENROUTER_API_KEY"),
+		model: os.Getenv("OPENROUTER_MODEL"), fallbackModel: os.Getenv("OPENROUTER_FALLBACK_MODEL"),
+		ollamaModel: os.Getenv("OLLAMA_MODEL"), ollamaBaseURL: os.Getenv("OLLAMA_BASE_URL"),
 		databaseURL: os.Getenv("DATABASE_URL"), mcpURL: os.Getenv("MCP_URL")}
-	if c.apiKey == "" || c.apiKey == "replace-me" || c.model == "" || c.databaseURL == "" || c.mcpURL == "" {
-		return config{}, errors.New("OPENROUTER_API_KEY, OPENROUTER_MODEL, DATABASE_URL e MCP_URL são obrigatórios")
+	if c.provider == "" {
+		c.provider = "openrouter"
 	}
-	if c.fallbackModel == c.model {
-		return config{}, errors.New("OPENROUTER_FALLBACK_MODEL deve ser diferente de OPENROUTER_MODEL")
+	if c.databaseURL == "" || c.mcpURL == "" {
+		return config{}, errors.New("DATABASE_URL e MCP_URL são obrigatórios")
+	}
+	switch c.provider {
+	case "openrouter":
+		if c.apiKey == "" || c.apiKey == "replace-me" || c.model == "" {
+			return config{}, errors.New("OPENROUTER_API_KEY e OPENROUTER_MODEL são obrigatórios")
+		}
+		if c.fallbackModel == c.model {
+			return config{}, errors.New("OPENROUTER_FALLBACK_MODEL deve ser diferente de OPENROUTER_MODEL")
+		}
+	case "ollama":
+		endpoint, err := url.Parse(c.ollamaBaseURL)
+		if c.ollamaModel == "" || err != nil || endpoint.Scheme != "http" || endpoint.Hostname() == "" ||
+			endpoint.Path != "/v1" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+			return config{}, errors.New("OLLAMA_MODEL e OLLAMA_BASE_URL local terminando em /v1 são obrigatórios")
+		}
+		switch endpoint.Hostname() {
+		case "host.docker.internal", "localhost", "127.0.0.1", "ollama":
+		default:
+			return config{}, errors.New("OLLAMA_BASE_URL deve apontar para o Ollama local")
+		}
+	default:
+		return config{}, errors.New("MODEL_PROVIDER deve ser openrouter ou ollama")
 	}
 	var err error
 	c.port, err = strconv.Atoi(os.Getenv("API_PORT"))
@@ -88,20 +117,24 @@ func main() {
 		logger.Error("migrations falharam", "error_type", fmt.Sprintf("%T", err))
 		os.Exit(1)
 	}
-	// O transporte adiciona fallback gratuito ao corpo OpenRouter sem alterar o agente ADK.
+	// A mesma integração ADK usa uma API OpenAI compatível em ambos os provedores.
 	modelHTTPClient := &http.Client{Timeout: cfg.requestTimeout}
-	if cfg.fallbackModel != "" {
+	modelName, baseURL, apiKey := cfg.model, "https://openrouter.ai/api/v1", cfg.apiKey
+	if cfg.provider == "ollama" {
+		modelName, baseURL, apiKey = cfg.ollamaModel, cfg.ollamaBaseURL, "ollama"
+	} else if cfg.fallbackModel != "" {
 		modelHTTPClient.Transport = openrouter.FallbackTransport{Primary: cfg.model, Fallback: cfg.fallbackModel}
 	}
-	model, err := openaimodel.NewModel(startupCtx, cfg.model, &openaimodel.ClientConfig{
-		APIKey: cfg.apiKey, BaseURL: "https://openrouter.ai/api/v1", API: openaimodel.APIChatCompletions,
+	var llm model.LLM
+	llm, err = openaimodel.NewModel(startupCtx, modelName, &openaimodel.ClientConfig{
+		APIKey: apiKey, BaseURL: baseURL, API: openaimodel.APIChatCompletions,
 		HTTPClient: modelHTTPClient,
 	})
 	if err != nil {
 		logger.Error("configurar modelo", "error_type", fmt.Sprintf("%T", err))
 		os.Exit(1)
 	}
-	decider, err := purchaseagent.New(model, cfg.mcpURL, &http.Client{Timeout: cfg.catalogTimeout}, cfg.maxModelCalls)
+	decider, err := purchaseagent.New(llm, cfg.mcpURL, &http.Client{Timeout: cfg.catalogTimeout}, cfg.maxModelCalls)
 	if err != nil {
 		logger.Error("configurar agente", "error", err)
 		os.Exit(1)

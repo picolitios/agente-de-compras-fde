@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,7 +22,7 @@ import (
 // Chat contém as duas operações que podem acionar o agente e criar requisições.
 type Chat interface {
 	Start(context.Context, string, string) (purchaseflow.Response, error)
-	Confirm(context.Context, string) (purchases.Purchase, error)
+	Confirm(context.Context, string, []purchases.Selection) (purchases.Purchase, error)
 }
 
 // History lê apenas as requisições já registradas.
@@ -114,14 +115,26 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-// confirm só registra uma proposta após chamada explícita deste endpoint.
+// confirm recebe IDs e quantidades; preços e produtos válidos vêm da proposta salva.
 func (s *Server) confirm(w http.ResponseWriter, r *http.Request) {
-	data, readErr := io.ReadAll(io.LimitReader(r.Body, 1))
-	if readErr != nil || len(data) > 0 {
-		writeError(w, http.StatusBadRequest, "UNEXPECTED_BODY", "Confirme a proposta sem enviar valores.")
+	data, readErr := io.ReadAll(io.LimitReader(r.Body, 8193))
+	if readErr != nil || len(data) > 8192 {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", "Envie uma seleção válida de produtos.")
 		return
 	}
-	purchase, err := s.chat.Confirm(r.Context(), r.PathValue("id"))
+	var selections []purchases.Selection
+	if len(data) > 0 {
+		r.Body = io.NopCloser(bytes.NewReader(data))
+		var input struct {
+			Items []purchases.Selection `json:"itens"`
+		}
+		if err := readJSON(w, r, &input); err != nil || len(input.Items) == 0 {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Envie uma seleção válida de produtos.")
+			return
+		}
+		selections = input.Items
+	}
+	purchase, err := s.chat.Confirm(r.Context(), r.PathValue("id"), selections)
 	if err != nil {
 		s.handleError(w, err)
 		return

@@ -17,9 +17,15 @@ func (s stubDecider) Decide(context.Context, string, string) (purchaseagent.Deci
 	return s.decision, nil
 }
 
-type stubDetails struct{ product catalog.Product }
+type stubDetails struct {
+	product  catalog.Product
+	products map[int]catalog.Product
+}
 
 func (s *stubDetails) Detail(_ context.Context, id int) (catalog.Product, error) {
+	if product, ok := s.products[id]; ok {
+		return product, nil
+	}
 	if s.product.ID != id {
 		return catalog.Product{}, catalog.ErrNotFound
 	}
@@ -44,10 +50,14 @@ func (s *stubStore) GetProposal(_ context.Context, id string) (purchases.Proposa
 }
 func (s *stubStore) Confirm(_ context.Context, id string, items []purchases.Item) (purchases.Purchase, error) {
 	s.confirms++
-	if id != s.proposal.ID || len(items) != 1 || items[0] != s.proposal.Items[0] {
+	if id != s.proposal.ID {
 		return purchases.Purchase{}, purchases.ErrStale
 	}
-	s.purchase = purchases.Purchase{ID: 1, RequestNumber: "REQ-000001", TotalCents: s.proposal.TotalCents, Items: items}
+	total, err := purchases.ValidateAllocation(s.proposal.Requirements, s.proposal.Options, items)
+	if err != nil {
+		return purchases.Purchase{}, err
+	}
+	s.purchase = purchases.Purchase{ID: 1, RequestNumber: "REQ-000001", TotalCents: total, Items: items}
 	return s.purchase, nil
 }
 func (s *stubStore) GetPurchase(context.Context, int64) (purchases.Purchase, error) {
@@ -71,12 +81,12 @@ func TestProposalAndConfirmation(t *testing.T) {
 	if err != nil || response.Type != "proposal" || response.Proposal == nil || response.Proposal.TotalCents != 599997 || store.confirms != 0 {
 		t.Fatalf("proposta inesperada: %+v, %v", response, err)
 	}
-	confirmed, err := flow.Confirm(context.Background(), response.Proposal.ID)
+	confirmed, err := flow.Confirm(context.Background(), response.Proposal.ID, nil)
 	if err != nil || confirmed.RequestNumber == "" || store.confirms != 1 {
 		t.Fatalf("confirmação inesperada: %+v, %v", confirmed, err)
 	}
 	store.proposal.PurchaseID = &confirmed.ID
-	if _, err := flow.Confirm(context.Background(), response.Proposal.ID); err != nil || store.confirms != 1 {
+	if _, err := flow.Confirm(context.Background(), response.Proposal.ID, nil); err != nil || store.confirms != 1 {
 		t.Fatalf("confirmação repetida deveria ser idempotente: %v", err)
 	}
 }
@@ -91,7 +101,7 @@ func TestChangedPrice(t *testing.T) {
 		t.Fatal(err)
 	}
 	details.product.Price = "2001.00"
-	if _, err := flow.Confirm(context.Background(), response.Proposal.ID); !errors.Is(err, purchases.ErrStale) || store.confirms != 0 {
+	if _, err := flow.Confirm(context.Background(), response.Proposal.ID, nil); !errors.Is(err, purchases.ErrStale) || store.confirms != 0 {
 		t.Fatalf("preço alterado aceito: %v", err)
 	}
 }
@@ -135,7 +145,39 @@ func TestExpiredProposal(t *testing.T) {
 	id, _ := purchases.NewID()
 	store := &stubStore{proposal: purchases.Proposal{ID: id, ExpiresAt: time.Now().Add(-time.Minute)}}
 	flow, _ := New(stubDecider{}, &stubDetails{}, store)
-	if _, err := flow.Confirm(context.Background(), id); !errors.Is(err, purchases.ErrExpired) {
+	if _, err := flow.Confirm(context.Background(), id, nil); !errors.Is(err, purchases.ErrExpired) {
 		t.Fatalf("proposta expirada aceita: %v", err)
+	}
+}
+
+// TestMixedSelection confirma itens distintos e rejeita contagens e IDs indevidos.
+func TestMixedSelection(t *testing.T) {
+	decision := validDecision()
+	decision.Quantity = 2
+	decision.CandidateProductIDs = []int{79}
+	store := &stubStore{}
+	details := &stubDetails{products: map[int]catalog.Product{
+		78: {ID: 78, Title: "Laptop A", Category: "laptops", Price: "1999.99"},
+		79: {ID: 79, Title: "Laptop B", Category: "laptops", Price: "1499.99"},
+	}}
+	flow, _ := New(stubDecider{decision}, details, store)
+	response, err := flow.Start(context.Background(), "", "2 laptops")
+	if err != nil || response.Type != "proposal" || len(response.Proposal.Options) != 2 {
+		t.Fatalf("opções inesperadas: %+v, %v", response, err)
+	}
+	for _, invalid := range [][]purchases.Selection{
+		{{ProductID: 78, Quantity: 1}},
+		{{ProductID: 78, Quantity: 3}},
+		{{ProductID: 80, Quantity: 2}},
+		{{ProductID: 78, Quantity: 1}, {ProductID: 78, Quantity: 1}},
+	} {
+		if _, err := flow.Confirm(context.Background(), response.Proposal.ID, invalid); !errors.Is(err, purchases.ErrInvalid) {
+			t.Fatalf("seleção inválida aceita: %+v, %v", invalid, err)
+		}
+	}
+	selections := []purchases.Selection{{ProductID: 78, Quantity: 1}, {ProductID: 79, Quantity: 1}}
+	purchase, err := flow.Confirm(context.Background(), response.Proposal.ID, selections)
+	if err != nil || len(purchase.Items) != 2 || purchase.TotalCents != 349998 || store.confirms != 1 {
+		t.Fatalf("seleção mista falhou: %+v, %v", purchase, err)
 	}
 }

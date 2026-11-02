@@ -109,24 +109,14 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		Category: decision.Category, Quantity: decision.Quantity, MaxUnitCents: maxUnit, MaxTotalCents: maxTotal,
 		RequiredBrand: decision.RequiredBrand, RequiredFeatures: decision.RequiredFeatures,
 	}
-	product, err := f.details.Detail(ctx, decision.SelectedProductID)
-	if errors.Is(err, catalog.ErrNotFound) {
-		response.Type = "no_match"
-		response.Message = "O produto indicado não existe mais no catálogo. Faça uma nova busca."
-		return response, nil
-	}
-	if err != nil {
-		return Response{}, fmt.Errorf("%w: %v", ErrCatalog, err)
-	}
-	item, err := purchases.ValidateSelection(requirements, product)
-	if err != nil {
-		response.Type = "no_match"
-		response.Message = "O produto encontrado não atende a todos os requisitos verificáveis."
-		return response, nil
-	}
-	options := []catalog.Product{product}
-	seen := map[int]bool{product.ID: true}
-	for _, id := range decision.CandidateProductIDs {
+	// Cada opção é validada por unidade; o orçamento total é aplicado à combinação final.
+	optionRequirements := requirements
+	optionRequirements.Quantity = 1
+	optionRequirements.MaxTotalCents = nil
+	options := make([]catalog.Product, 0, 5)
+	optionSnapshots := make([]purchases.Item, 0, 5)
+	seen := make(map[int]bool, 5)
+	for _, id := range append([]int{decision.SelectedProductID}, decision.CandidateProductIDs...) {
 		if id <= 0 || seen[id] {
 			continue
 		}
@@ -138,9 +128,23 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		if err != nil {
 			return Response{}, fmt.Errorf("%w: %v", ErrCatalog, err)
 		}
-		if _, err := purchases.ValidateSelection(requirements, candidate); err == nil {
+		if snapshot, err := purchases.ValidateSelection(optionRequirements, candidate); err == nil {
 			options = append(options, candidate)
+			optionSnapshots = append(optionSnapshots, snapshot)
 		}
+	}
+	var suggested purchases.Item
+	for _, candidate := range options {
+		item, err := purchases.ValidateSelection(requirements, candidate)
+		if err == nil {
+			suggested = item
+			break
+		}
+	}
+	if suggested.ProductID == 0 {
+		response.Type = "no_match"
+		response.Message = "Os produtos encontrados não atendem ao pedido e ao orçamento total."
+		return response, nil
 	}
 	id, err := purchases.NewID()
 	if err != nil {
@@ -148,21 +152,23 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	}
 	proposal := purchases.Proposal{
 		ID: id, OriginalRequest: message, ConversationID: conversationID,
-		Requirements: requirements, Items: []purchases.Item{item}, TotalCents: item.SubtotalCents,
-		ExpiresAt: time.Now().UTC().Add(15 * time.Minute),
+		Requirements: requirements, Items: []purchases.Item{suggested}, Options: optionSnapshots,
+		TotalCents: suggested.SubtotalCents,
+		ExpiresAt:  time.Now().UTC().Add(15 * time.Minute),
 	}
 	if err := f.store.SaveProposal(ctx, proposal); err != nil {
 		return Response{}, fmt.Errorf("salvar proposta: %w", err)
 	}
 	response.Type = "proposal"
-	response.SelectedProductID = product.ID
+	response.Message = fmt.Sprintf("Encontrei %d opções verificadas. Escolha %d unidades entre elas e confirme a requisição.", len(options), requirements.Quantity)
+	response.SelectedProductID = suggested.ProductID
 	response.Products = options
 	response.Proposal = &proposal
 	return response, nil
 }
 
 // Confirm consulta o catálogo novamente e deixa o repositório fazer a gravação atômica.
-func (f *Flow) Confirm(ctx context.Context, id string) (purchases.Purchase, error) {
+func (f *Flow) Confirm(ctx context.Context, id string, selections []purchases.Selection) (purchases.Purchase, error) {
 	if !purchases.ValidID(id) {
 		return purchases.Purchase{}, purchases.ErrInvalid
 	}
@@ -176,21 +182,62 @@ func (f *Flow) Confirm(ctx context.Context, id string) (purchases.Purchase, erro
 	if !time.Now().Before(proposal.ExpiresAt) {
 		return purchases.Purchase{}, purchases.ErrExpired
 	}
-	if len(proposal.Items) != 1 {
+	options := proposal.Options
+	if len(options) == 0 {
+		// Propostas antigas só conhecem os itens sugeridos pelo agente.
+		for _, item := range proposal.Items {
+			item.Quantity = 1
+			item.SubtotalCents = item.UnitPriceCents
+			options = append(options, item)
+		}
+	}
+	if selections == nil {
+		for _, item := range proposal.Items {
+			selections = append(selections, purchases.Selection{ProductID: item.ProductID, Quantity: item.Quantity})
+		}
+	}
+	if len(selections) == 0 || len(selections) > len(options) {
 		return purchases.Purchase{}, purchases.ErrInvalid
 	}
-	product, err := f.details.Detail(ctx, proposal.Items[0].ProductID)
-	if errors.Is(err, catalog.ErrNotFound) {
-		return purchases.Purchase{}, purchases.ErrStale
+	allowed := make(map[int]bool, len(options))
+	for _, option := range options {
+		allowed[option.ProductID] = true
 	}
-	if err != nil {
-		return purchases.Purchase{}, fmt.Errorf("%w: %v", ErrCatalog, err)
+	seen := make(map[int]bool, len(selections))
+	quantity := 0
+	for _, selection := range selections {
+		if !allowed[selection.ProductID] || seen[selection.ProductID] || selection.Quantity <= 0 || selection.Quantity > proposal.Requirements.Quantity-quantity {
+			return purchases.Purchase{}, purchases.ErrInvalid
+		}
+		seen[selection.ProductID] = true
+		quantity += selection.Quantity
 	}
-	current, err := purchases.ValidateSelection(proposal.Requirements, product)
-	if err != nil {
-		return purchases.Purchase{}, purchases.ErrStale
+	if quantity != proposal.Requirements.Quantity {
+		return purchases.Purchase{}, purchases.ErrInvalid
 	}
-	return f.store.Confirm(ctx, id, []purchases.Item{current})
+	// Consulta cada produto escolhido antes de calcular o total e solicitar a transação.
+	currentItems := make([]purchases.Item, 0, len(selections))
+	for _, selection := range selections {
+		product, err := f.details.Detail(ctx, selection.ProductID)
+		if errors.Is(err, catalog.ErrNotFound) {
+			return purchases.Purchase{}, purchases.ErrStale
+		}
+		if err != nil {
+			return purchases.Purchase{}, fmt.Errorf("%w: %v", ErrCatalog, err)
+		}
+		itemRequirements := proposal.Requirements
+		itemRequirements.Quantity = selection.Quantity
+		itemRequirements.MaxTotalCents = nil
+		item, err := purchases.ValidateSelection(itemRequirements, product)
+		if err != nil {
+			return purchases.Purchase{}, purchases.ErrStale
+		}
+		currentItems = append(currentItems, item)
+	}
+	if _, err := purchases.ValidateAllocation(proposal.Requirements, options, currentItems); err != nil {
+		return purchases.Purchase{}, err
+	}
+	return f.store.Confirm(ctx, id, currentItems)
 }
 
 // mentionsOtherCurrency impede comparar preços USD sem conversão definida.

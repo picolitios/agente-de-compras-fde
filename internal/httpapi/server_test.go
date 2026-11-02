@@ -19,10 +19,11 @@ import (
 )
 
 type testChat struct {
-	response purchaseflow.Response
-	purchase purchases.Purchase
-	err      error
-	message  string
+	response   purchaseflow.Response
+	purchase   purchases.Purchase
+	err        error
+	message    string
+	selections []purchases.Selection
 }
 
 func (c *testChat) Start(_ context.Context, _, message string) (purchaseflow.Response, error) {
@@ -30,7 +31,8 @@ func (c *testChat) Start(_ context.Context, _, message string) (purchaseflow.Res
 	return c.response, c.err
 }
 
-func (c *testChat) Confirm(context.Context, string) (purchases.Purchase, error) {
+func (c *testChat) Confirm(_ context.Context, _ string, selections []purchases.Selection) (purchases.Purchase, error) {
+	c.selections = selections
 	return c.purchase, c.err
 }
 
@@ -74,9 +76,16 @@ func TestCreateAndConfirm(t *testing.T) {
 		t.Fatalf("resposta inválida: %+v, %v", response, err)
 	}
 	confirm := httptest.NewRecorder()
-	handler.ServeHTTP(confirm, httptest.NewRequest(http.MethodPost, "/requisicoes/proposal-id/confirmar", nil))
-	if confirm.Code != http.StatusOK || !strings.Contains(confirm.Body.String(), "REQ-000001") {
+	confirmRequest := httptest.NewRequest(http.MethodPost, "/requisicoes/proposal-id/confirmar", strings.NewReader(`{"itens":[{"produto_id":78,"quantidade":1},{"produto_id":79,"quantidade":1}]}`))
+	confirmRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(confirm, confirmRequest)
+	if confirm.Code != http.StatusOK || !strings.Contains(confirm.Body.String(), "REQ-000001") || len(chat.selections) != 2 {
 		t.Fatalf("confirmação inválida: %d %s", confirm.Code, confirm.Body.String())
+	}
+	legacy := httptest.NewRecorder()
+	handler.ServeHTTP(legacy, httptest.NewRequest(http.MethodPost, "/requisicoes/proposal-id/confirmar", nil))
+	if legacy.Code != http.StatusOK || chat.selections != nil {
+		t.Fatalf("confirmação antiga inválida: %d", legacy.Code)
 	}
 }
 
@@ -90,6 +99,7 @@ func TestInputValidation(t *testing.T) {
 		{http.MethodGet, "/requisicoes?limit=101", ""},
 		{http.MethodGet, "/requisicoes/abc", ""},
 		{http.MethodPost, "/requisicoes/id/confirmar", `{"total":1}`},
+		{http.MethodPost, "/requisicoes/id/confirmar", `{"itens":[{"produto_id":78,"quantidade":1,"preco":1}]}`},
 	} {
 		req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 		req.Header.Set("Content-Type", "application/json")

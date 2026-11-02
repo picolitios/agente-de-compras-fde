@@ -32,16 +32,17 @@ func TestRepositoryRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := Item{ProductID: 78, ProductName: "Laptop", UnitPriceCents: 199999, Quantity: 3, SubtotalCents: 599997}
+	option := Item{ProductID: 78, ProductName: "Laptop", UnitPriceCents: 199999, Quantity: 1, SubtotalCents: 199999}
 	proposal := Proposal{
 		ID: id, OriginalRequest: "3 laptops", ConversationID: "test",
 		Requirements: Requirements{Category: "laptops", Quantity: 3},
-		Items:        []Item{item}, TotalCents: 599997, ExpiresAt: time.Now().Add(time.Hour),
+		Items:        []Item{item}, Options: []Item{option}, TotalCents: 599997, ExpiresAt: time.Now().Add(time.Hour),
 	}
 	if err := repo.SaveProposal(ctx, proposal); err != nil {
 		t.Fatal(err)
 	}
 	saved, err := repo.GetProposal(ctx, id)
-	if err != nil || saved.TotalCents != proposal.TotalCents {
+	if err != nil || saved.TotalCents != proposal.TotalCents || len(saved.Options) != 1 {
 		t.Fatalf("proposta não recuperada: %+v, %v", saved, err)
 	}
 	stale := item
@@ -68,16 +69,40 @@ func TestRepositoryRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	first := option
 	second := Item{ProductID: 79, ProductName: "Outro laptop", UnitPriceCents: 10000, Quantity: 1, SubtotalCents: 10000}
+	mixedID, err := NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mixed := Proposal{
+		ID: mixedID, OriginalRequest: "2 laptops", ConversationID: "test",
+		Requirements: Requirements{Category: "laptops", Quantity: 2},
+		Items:        []Item{{ProductID: 78, ProductName: "Laptop", UnitPriceCents: 199999, Quantity: 2, SubtotalCents: 399998}},
+		Options:      []Item{first, second}, TotalCents: 399998, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if err := repo.SaveProposal(ctx, mixed); err != nil {
+		t.Fatal(err)
+	}
+	mixedPurchase, err := repo.Confirm(ctx, mixedID, []Item{first, second})
+	if err != nil || mixedPurchase.TotalCents != 209999 || len(mixedPurchase.Items) != 2 {
+		t.Fatalf("seleção mista não persistida: %+v, %v", mixedPurchase, err)
+	}
+	loaded, err := repo.GetPurchase(ctx, mixedPurchase.ID)
+	if err != nil || len(loaded.Items) != 2 {
+		t.Fatalf("itens mistos não encontrados: %+v, %v", loaded, err)
+	}
+	rollbackSecond := second
+	rollbackSecond.ProductName = "rollback-only"
 	rollbackProposal := Proposal{
 		ID: rollbackID, OriginalRequest: "rollback " + rollbackID, ConversationID: "test",
-		Requirements: Requirements{Category: "laptops", Quantity: 1},
-		Items:        []Item{item, second}, TotalCents: 609997, ExpiresAt: time.Now().Add(time.Hour),
+		Requirements: Requirements{Category: "laptops", Quantity: 2},
+		Items:        []Item{first, rollbackSecond}, Options: []Item{first, rollbackSecond}, TotalCents: 209999, ExpiresAt: time.Now().Add(time.Hour),
 	}
 	if err := repo.SaveProposal(ctx, rollbackProposal); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `ALTER TABLE purchase_items ADD CONSTRAINT test_reject_79 CHECK (external_product_id <> 79)`); err != nil {
+	if _, err := pool.Exec(ctx, `ALTER TABLE purchase_items ADD CONSTRAINT test_reject_79 CHECK (product_name <> 'rollback-only')`); err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Exec(ctx, `ALTER TABLE purchase_items DROP CONSTRAINT test_reject_79`)

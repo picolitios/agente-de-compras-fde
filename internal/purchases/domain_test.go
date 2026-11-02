@@ -66,3 +66,30 @@ func TestTotal(t *testing.T) {
 		t.Fatal("produto duplicado aceito")
 	}
 }
+
+// TestValidateAllocation aplica quantidade exata, orçamento conjunto e snapshot de cada opção.
+func TestValidateAllocation(t *testing.T) {
+	limit := int64(350000)
+	req := Requirements{Quantity: 2, MaxTotalCents: &limit}
+	options := []Item{
+		{ProductID: 78, ProductName: "A", UnitPriceCents: 199999, Quantity: 1, SubtotalCents: 199999},
+		{ProductID: 79, ProductName: "B", UnitPriceCents: 149999, Quantity: 1, SubtotalCents: 149999},
+	}
+	items := append([]Item(nil), options...)
+	if total, err := ValidateAllocation(req, options, items); err != nil || total != 349998 {
+		t.Fatalf("alocação válida rejeitada: %d, %v", total, err)
+	}
+	if _, err := ValidateAllocation(Requirements{Quantity: 3}, options, items); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("quantidade incompleta aceita: %v", err)
+	}
+	tooLow := int64(349997)
+	if _, err := ValidateAllocation(Requirements{Quantity: 2, MaxTotalCents: &tooLow}, options, items); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("orçamento excedido aceito: %v", err)
+	}
+	changed := append([]Item(nil), items...)
+	changed[1].UnitPriceCents++
+	changed[1].SubtotalCents++
+	if _, err := ValidateAllocation(req, options, changed); !errors.Is(err, ErrStale) {
+		t.Fatalf("preço alterado aceito: %v", err)
+	}
+}

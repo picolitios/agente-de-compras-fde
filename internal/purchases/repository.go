@@ -74,7 +74,7 @@ func (r *Repository) SaveProposal(ctx context.Context, proposal Proposal) error 
 	if _, err := hex.DecodeString(proposal.ID); err != nil {
 		return ErrInvalid
 	}
-	total, err := Total(proposal.Items)
+	total, err := ValidateAllocation(proposal.Requirements, proposal.Options, proposal.Items)
 	if err != nil || total != proposal.TotalCents {
 		return ErrInvalid
 	}
@@ -86,21 +86,25 @@ func (r *Repository) SaveProposal(ctx context.Context, proposal Proposal) error 
 	if err != nil {
 		return err
 	}
+	options, err := json.Marshal(proposal.Options)
+	if err != nil {
+		return err
+	}
 	_, err = r.pool.Exec(ctx, `INSERT INTO purchase_proposals
-		(id, original_request, conversation_id, requirements, items, total_cents, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`, proposal.ID, proposal.OriginalRequest,
-		proposal.ConversationID, requirements, items, proposal.TotalCents, proposal.ExpiresAt)
+		(id, original_request, conversation_id, requirements, items, options, total_cents, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, proposal.ID, proposal.OriginalRequest,
+		proposal.ConversationID, requirements, items, options, proposal.TotalCents, proposal.ExpiresAt)
 	return err
 }
 
 // GetProposal recupera a proposta e seus critérios para validação na confirmação.
 func (r *Repository) GetProposal(ctx context.Context, id string) (Proposal, error) {
 	var proposal Proposal
-	var requirements, items []byte
-	err := r.pool.QueryRow(ctx, `SELECT id, original_request, conversation_id, requirements, items,
+	var requirements, items, options []byte
+	err := r.pool.QueryRow(ctx, `SELECT id, original_request, conversation_id, requirements, items, options,
 		total_cents, expires_at, purchase_id FROM purchase_proposals WHERE id=$1`, id).
 		Scan(&proposal.ID, &proposal.OriginalRequest, &proposal.ConversationID, &requirements,
-			&items, &proposal.TotalCents, &proposal.ExpiresAt, &proposal.PurchaseID)
+			&items, &options, &proposal.TotalCents, &proposal.ExpiresAt, &proposal.PurchaseID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Proposal{}, ErrMissing
 	}
@@ -111,6 +115,9 @@ func (r *Repository) GetProposal(ctx context.Context, id string) (Proposal, erro
 		return Proposal{}, err
 	}
 	if err := json.Unmarshal(items, &proposal.Items); err != nil {
+		return Proposal{}, err
+	}
+	if err := json.Unmarshal(options, &proposal.Options); err != nil {
 		return Proposal{}, err
 	}
 	return proposal, nil
@@ -128,13 +135,12 @@ func (r *Repository) Confirm(ctx context.Context, id string, currentItems []Item
 	}
 	defer tx.Rollback(ctx)
 	var original string
-	var savedItems []byte
-	var savedTotal int64
+	var requirements, savedItems, savedOptions []byte
 	var expires time.Time
 	var purchaseID *int64
-	err = tx.QueryRow(ctx, `SELECT original_request, items, total_cents, expires_at, purchase_id
+	err = tx.QueryRow(ctx, `SELECT original_request, requirements, items, options, expires_at, purchase_id
 		FROM purchase_proposals WHERE id=$1 FOR UPDATE`, id).
-		Scan(&original, &savedItems, &savedTotal, &expires, &purchaseID)
+		Scan(&original, &requirements, &savedItems, &savedOptions, &expires, &purchaseID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Purchase{}, ErrMissing
 	}
@@ -150,20 +156,30 @@ func (r *Repository) Confirm(ctx context.Context, id string, currentItems []Item
 	if !time.Now().Before(expires) {
 		return Purchase{}, ErrExpired
 	}
-	if total != savedTotal {
-		return Purchase{}, ErrStale
-	}
-	var proposed []Item
-	if err := json.Unmarshal(savedItems, &proposed); err != nil {
+	var req Requirements
+	if err := json.Unmarshal(requirements, &req); err != nil {
 		return Purchase{}, err
 	}
-	if len(proposed) != len(currentItems) {
-		return Purchase{}, ErrStale
+	var options []Item
+	if err := json.Unmarshal(savedOptions, &options); err != nil {
+		return Purchase{}, err
 	}
-	for i := range proposed {
-		if proposed[i] != currentItems[i] {
-			return Purchase{}, ErrStale
+	if len(options) == 0 {
+		// Propostas anteriores à migration mantêm apenas a seleção sugerida.
+		if err := json.Unmarshal(savedItems, &options); err != nil {
+			return Purchase{}, err
 		}
+		for i := range options {
+			options[i].Quantity = 1
+			options[i].SubtotalCents = options[i].UnitPriceCents
+		}
+	}
+	validatedTotal, err := ValidateAllocation(req, options, currentItems)
+	if err != nil {
+		return Purchase{}, err
+	}
+	if validatedTotal != total {
+		return Purchase{}, ErrInvalid
 	}
 	var number int64
 	if err := tx.QueryRow(ctx, `SELECT nextval('purchase_request_number_seq')`).Scan(&number); err != nil {

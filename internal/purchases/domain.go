@@ -38,6 +38,12 @@ type Item struct {
 	SubtotalCents  int64  `json:"subtotal_cents"`
 }
 
+// Selection contém apenas produto e quantidade escolhidos pelo usuário.
+type Selection struct {
+	ProductID int `json:"produto_id"`
+	Quantity  int `json:"quantidade"`
+}
+
 // Proposal mantém uma sugestão aprovada pelo backend até a confirmação explícita.
 type Proposal struct {
 	ID              string       `json:"id"`
@@ -45,6 +51,7 @@ type Proposal struct {
 	ConversationID  string       `json:"conversation_id"`
 	Requirements    Requirements `json:"requirements"`
 	Items           []Item       `json:"items"`
+	Options         []Item       `json:"options"`
 	TotalCents      int64        `json:"total_cents"`
 	ExpiresAt       time.Time    `json:"expires_at"`
 	PurchaseID      *int64       `json:"purchase_id,omitempty"`
@@ -155,6 +162,42 @@ func Total(items []Item) (int64, error) {
 			return 0, ErrInvalid
 		}
 		total += subtotal
+	}
+	return total, nil
+}
+
+// ValidateAllocation exige a quantidade pedida e compara cada item com a proposta salva.
+func ValidateAllocation(req Requirements, options, items []Item) (int64, error) {
+	if req.Quantity <= 0 || req.Quantity > 1000 || len(options) == 0 || len(options) > 5 || len(items) == 0 || len(items) > len(options) {
+		return 0, ErrInvalid
+	}
+	available := make(map[int]Item, len(options))
+	for _, option := range options {
+		if option.Quantity != 1 || option.SubtotalCents != option.UnitPriceCents || option.ProductID <= 0 || option.ProductName == "" || option.UnitPriceCents < 0 {
+			return 0, ErrInvalid
+		}
+		if _, exists := available[option.ProductID]; exists {
+			return 0, ErrInvalid
+		}
+		available[option.ProductID] = option
+	}
+	total, err := Total(items)
+	if err != nil {
+		return 0, err
+	}
+	quantity := 0
+	for _, item := range items {
+		option, exists := available[item.ProductID]
+		if !exists {
+			return 0, ErrInvalid
+		}
+		if item.ProductName != option.ProductName || item.UnitPriceCents != option.UnitPriceCents {
+			return 0, ErrStale
+		}
+		quantity += item.Quantity
+	}
+	if quantity != req.Quantity || (req.MaxTotalCents != nil && total > *req.MaxTotalCents) {
+		return 0, ErrInvalid
 	}
 	return total, nil
 }

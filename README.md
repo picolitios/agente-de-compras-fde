@@ -4,24 +4,27 @@ MVP de requisições de compra em linguagem natural. O agente Go com Google ADK 
 
 ## Executar com Docker
 
-Pré-requisito: Docker com Compose e uma chave OpenRouter válida para um modelo que aceite chamadas de ferramentas.
+Pré-requisitos: Docker com Compose e [Ollama](https://docs.ollama.com/api/openai-compatibility) rodando no computador. O modelo local precisa aceitar chamadas de ferramentas; o padrão é [`qwen2.5:3b-instruct`](https://ollama.com/library/qwen2.5:3b-instruct) (download de aproximadamente 1,9 GB).
 
 1. Copie `.env.example` para `.env`.
-2. No `.env` local, preencha `OPENROUTER_API_KEY`, `POSTGRES_PASSWORD` e a mesma senha em `DATABASE_URL`. Nunca inclua o `.env` no Git.
-3. Execute `docker compose up --build -d` na raiz do projeto.
-4. Abra `http://localhost:5173`. A API fica em `http://localhost:8080` e o servidor MCP em `http://localhost:8081/mcp`.
+2. No `.env` local, preencha `POSTGRES_PASSWORD` e a mesma senha em `DATABASE_URL`. A chave OpenRouter não é necessária no modo local. Nunca inclua o `.env` no Git.
+3. Inicie o Ollama e execute `ollama pull qwen2.5:3b-instruct` uma vez no computador.
+4. Execute `docker compose up --build -d` na raiz do projeto.
+5. Abra `http://localhost:5173`. A API fica em `http://localhost:8080` e o servidor MCP em `http://localhost:8081/mcp`.
 
 Para conferir o estado, use `docker compose ps` e `curl http://localhost:8080/health`. Para encerrar, use `docker compose down`; o volume do PostgreSQL é preservado.
 
-As portas externas ficam restritas a `127.0.0.1` e podem ser alteradas com `FRONTEND_PORT`, `API_PORT` e `MCP_PORT` no `.env`. O frontend encaminha `/api/*` para o serviço Go no Compose, sem expor a chave ao navegador. A aplicação rejeita uma chave ausente ou com o valor de exemplo.
+As portas externas ficam restritas a `127.0.0.1` e podem ser alteradas com `FRONTEND_PORT`, `API_PORT` e `MCP_PORT` no `.env`. A API acessa o Ollama do computador por `host.docker.internal:11434`; o Ollama não precisa ser exposto na rede externa. O frontend encaminha `/api/*` para o serviço Go no Compose. O modo local não injeta a chave OpenRouter no container da API.
 
-### Modelo gratuito e alternativa
+### Voltar ao OpenRouter
 
-O padrão é `OPENROUTER_MODEL=google/gemma-4-31b-it:free`. O Gemma 4 aceita chamadas de ferramentas pela API OpenAI compatível do OpenRouter, usada pelo ADK Go. `OPENROUTER_FALLBACK_MODEL=openrouter/free` faz o OpenRouter tentar outro modelo gratuito quando o Gemma estiver indisponível ou limitado pelo provedor. O roteador gratuito pode escolher modelos diferentes entre chamadas; o backend continua revalidando os produtos e valores antes de criar uma proposta. Ambos os modelos são configuráveis sem alterar código. Defina `OPENROUTER_FALLBACK_MODEL=` para desativar a alternativa ou troque `OPENROUTER_MODEL` por outro modelo com suporte a ferramentas. Verifique preço e capacidade do modelo escolhido antes de usar um identificador pago.
+Preencha `OPENROUTER_API_KEY` somente no `.env` local e execute `docker compose -f compose.yaml -f compose.openrouter.yaml up --build -d`. Para retornar ao modo local, execute `docker compose up --build -d`. Os dois modos usam o mesmo agente ADK, as mesmas ferramentas MCP, DummyJSON e PostgreSQL; apenas o endpoint do modelo muda.
+
+O OpenRouter usa `OPENROUTER_MODEL=google/gemma-4-31b-it:free` e `OPENROUTER_FALLBACK_MODEL=openrouter/free` por padrão. Os modelos são configuráveis no `.env` sem alterar código. Defina `OPENROUTER_FALLBACK_MODEL=` para desativar a alternativa ou troque `OPENROUTER_MODEL` por outro modelo com suporte a ferramentas. Verifique preço e capacidade antes de escolher um modelo pago.
 
 Modelos `:free` têm limites de uso e podem receber HTTP 429 mesmo quando a chave e a integração estão corretas. Faça um pedido de teste antes da demonstração. Uma chave nova deve ser criada na conta OpenRouter do usuário e guardada apenas no `.env` local; a chave não é enviada ao frontend. Os testes automatizados verificam o contrato de ferramentas entre ADK, protocolo OpenAI e MCP sem consumir a API externa.
 
-O tempo máximo de processamento de um pedido é configurado por `REQUEST_TIMEOUT` (90 segundos por padrão). O proxy do frontend aguarda até 100 segundos. Se o modelo gratuito atingir seu limite ou devolver uma resposta inválida, a API informa o motivo sem expor dados internos; o usuário pode tentar novamente.
+O tempo máximo de processamento de um pedido é configurado por `REQUEST_TIMEOUT` (180 segundos por padrão no modo local). O proxy do frontend aguarda até 200 segundos. Modelos locais pequenos podem levar mais tempo e interpretar requisitos de forma incorreta; o backend continua validando produtos, quantidade e preços antes de registrar uma requisição.
 
 ## Fluxo
 
@@ -49,9 +52,9 @@ Erros da API usam `{"erro":{"codigo":"...","mensagem":"..."}}`. Propostas expira
 
 - Backend: Go 1.26.6. Execute `go test ./...` e `go vet ./...`. O teste de integração PostgreSQL usa `TEST_DATABASE_URL`; sem ela, esse teste é ignorado.
 - Frontend: Node 24. Em `frontend/`, execute `npm ci`, `npm run dev`, `npm run build` e `npm run format:check`. O Vite encaminha `/api` para `http://localhost:8080` no desenvolvimento local.
-- Docker: `docker compose config -q` valida a configuração sem imprimir os valores interpolados. `docker compose build` valida as três imagens próprias.
+- Docker: `docker compose config -q` valida a configuração local sem imprimir os valores interpolados. `docker compose build` valida as três imagens próprias.
 
-Os testes cobrem catálogo, ferramentas MCP, interpretação por ADK com modelo simulado, validações do backend, API e persistência PostgreSQL. Uma execução real com OpenRouter depende da chave configurada somente no ambiente local.
+Os testes cobrem catálogo, ferramentas MCP, interpretação por ADK com modelo simulado, validações do backend, API e persistência PostgreSQL. O modo local permite testar o agente real sem chave externa; o modo OpenRouter depende da chave configurada somente no `.env` local.
 
 ## Limites do MVP
 

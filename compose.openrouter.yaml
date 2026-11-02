@@ -1,0 +1,7 @@
+services:
+  api:
+    environment:
+      MODEL_PROVIDER: openrouter
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Defina OPENROUTER_API_KEY no .env}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemma-4-31b-it:free}
+      OPENROUTER_FALLBACK_MODEL: ${OPENROUTER_FALLBACK_MODEL-openrouter/free}

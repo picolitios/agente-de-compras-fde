@@ -34,13 +34,13 @@ services:
       mcp:
         condition: service_started
     environment:
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Defina OPENROUTER_API_KEY no .env}
-      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemma-4-31b-it:free}
-      OPENROUTER_FALLBACK_MODEL: ${OPENROUTER_FALLBACK_MODEL-openrouter/free}
+      MODEL_PROVIDER: ollama
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b-instruct}
+      OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
       DATABASE_URL: ${DATABASE_URL:?Defina DATABASE_URL no .env}
       MCP_URL: http://mcp:8081/mcp
       API_PORT: "8080"
-      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-90s}
+      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-180s}
       CATALOG_TIMEOUT: ${CATALOG_TIMEOUT:-5s}
       MAX_MODEL_CALLS: ${MAX_MODEL_CALLS:-8}
     ports:

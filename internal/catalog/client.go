@@ -30,20 +30,26 @@ type Product struct {
 // UnmarshalJSON preserva os dígitos do preço externo e publica uma string exata no MCP.
 func (p *Product) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID          int         `json:"id"`
-		Title       string      `json:"title"`
-		Description string      `json:"description"`
-		Category    string      `json:"category"`
-		Price       json.Number `json:"price"`
-		Brand       string      `json:"brand"`
-		Tags        []string    `json:"tags"`
+		ID          int             `json:"id"`
+		Title       string          `json:"title"`
+		Description string          `json:"description"`
+		Category    string          `json:"category"`
+		Price       json.RawMessage `json:"price"`
+		Brand       string          `json:"brand"`
+		Tags        []string        `json:"tags"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	price := string(raw.Price)
+	if len(raw.Price) > 0 && raw.Price[0] == '"' {
+		if err := json.Unmarshal(raw.Price, &price); err != nil {
+			return err
+		}
+	}
 	*p = Product{
 		ID: raw.ID, Title: raw.Title, Description: raw.Description,
-		Category: raw.Category, Price: raw.Price.String(), Brand: raw.Brand, Tags: raw.Tags,
+		Category: raw.Category, Price: price, Brand: raw.Brand, Tags: raw.Tags,
 	}
 	return nil
 }

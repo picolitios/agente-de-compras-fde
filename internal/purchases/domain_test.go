@@ -41,6 +41,7 @@ func TestValidateSelection(t *testing.T) {
 		func(r *Requirements) { r.RequiredFeatures = []string{"32 GB RAM"} },
 		func(r *Requirements) { r.Unverifiable = []string{"32 GB RAM"} },
 		func(r *Requirements) { low := int64(199998); r.MaxUnitCents = &low },
+		func(r *Requirements) { low := int64(599996); r.MaxTotalCents = &low },
 	} {
 		invalid := req
 		mutate(&invalid)

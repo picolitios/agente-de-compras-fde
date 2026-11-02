@@ -12,7 +12,10 @@ import (
 	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
 )
 
-var ErrCatalog = errors.New("catálogo indisponível")
+var (
+	ErrCatalog = errors.New("catálogo indisponível")
+	ErrAgent   = errors.New("agente indisponível")
+)
 
 // Decider deixa a escolha de ferramentas e produtos a cargo do agente ADK.
 type Decider interface {
@@ -72,14 +75,14 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	}
 	decision, err := f.decider.Decide(ctx, conversationID, message)
 	if err != nil {
-		return Response{}, fmt.Errorf("agente de compras: %w", err)
+		return Response{}, fmt.Errorf("%w: %w", ErrAgent, err)
 	}
 	response := Response{Type: decision.Status, Message: decision.Message, ConversationID: conversationID}
 	if decision.Status == "clarify" || decision.Status == "no_match" {
 		return response, nil
 	}
 	if decision.Status != "select" || decision.SelectedProductID <= 0 || decision.Quantity <= 0 || decision.Quantity > 1000 || decision.Category == "" || len(decision.CandidateProductIDs) > 4 {
-		return Response{}, errors.New("seleção inválida do agente")
+		return Response{}, fmt.Errorf("%w: seleção inválida", ErrAgent)
 	}
 	if len(decision.Unverifiable) > 0 || mentionsOtherCurrency(message) {
 		response.Type = "clarify"
@@ -90,12 +93,20 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	if decision.MaxUnitPrice != "" {
 		cents, err := purchases.ParseCents(decision.MaxUnitPrice)
 		if err != nil {
-			return Response{}, errors.New("limite de preço inválido do agente")
+			return Response{}, fmt.Errorf("%w: limite de preço inválido", ErrAgent)
 		}
 		maxUnit = &cents
 	}
+	var maxTotal *int64
+	if decision.MaxTotalPrice != "" {
+		cents, err := purchases.ParseCents(decision.MaxTotalPrice)
+		if err != nil {
+			return Response{}, fmt.Errorf("%w: orçamento total inválido", ErrAgent)
+		}
+		maxTotal = &cents
+	}
 	requirements := purchases.Requirements{
-		Category: decision.Category, Quantity: decision.Quantity, MaxUnitCents: maxUnit,
+		Category: decision.Category, Quantity: decision.Quantity, MaxUnitCents: maxUnit, MaxTotalCents: maxTotal,
 		RequiredBrand: decision.RequiredBrand, RequiredFeatures: decision.RequiredFeatures,
 	}
 	product, err := f.details.Detail(ctx, decision.SelectedProductID)

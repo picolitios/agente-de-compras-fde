@@ -33,6 +33,7 @@ type Decision struct {
 	Category            string   `json:"category"`
 	Quantity            int      `json:"quantity"`
 	MaxUnitPrice        string   `json:"max_unit_price"`
+	MaxTotalPrice       string   `json:"max_total_price"`
 	RequiredBrand       string   `json:"required_brand"`
 	RequiredFeatures    []string `json:"required_features"`
 	Unverifiable        []string `json:"unverifiable"`

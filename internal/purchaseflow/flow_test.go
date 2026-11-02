@@ -96,6 +96,20 @@ func TestChangedPrice(t *testing.T) {
 	}
 }
 
+// TestTotalBudget impede uma proposta acima do orçamento total informado.
+func TestTotalBudget(t *testing.T) {
+	decision := validDecision()
+	decision.MaxTotalPrice = "5999.96"
+	store := &stubStore{}
+	flow, _ := New(stubDecider{decision}, &stubDetails{product: catalog.Product{
+		ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99",
+	}}, store)
+	response, err := flow.Start(context.Background(), "", "3 laptops até US$ 5999.96 no total")
+	if err != nil || response.Type != "no_match" || store.proposal.ID != "" {
+		t.Fatalf("orçamento total excedido: %+v, %v", response, err)
+	}
+}
+
 // TestNoProposalForUnsupportedRequirements cobre catálogo insuficiente e moeda diferente.
 func TestNoProposalForUnsupportedRequirements(t *testing.T) {
 	for _, tt := range []struct {

@@ -23,6 +23,7 @@ type Requirements struct {
 	Category         string   `json:"category"`
 	Quantity         int      `json:"quantity"`
 	MaxUnitCents     *int64   `json:"max_unit_cents,omitempty"`
+	MaxTotalCents    *int64   `json:"max_total_cents,omitempty"`
 	RequiredBrand    string   `json:"required_brand,omitempty"`
 	RequiredFeatures []string `json:"required_features,omitempty"`
 	Unverifiable     []string `json:"unverifiable,omitempty"`
@@ -130,7 +131,11 @@ func ValidateSelection(req Requirements, product catalog.Product) (Item, error) 
 	if unit > math.MaxInt64/int64(req.Quantity) {
 		return Item{}, ErrInvalid
 	}
-	return Item{ProductID: product.ID, ProductName: product.Title, UnitPriceCents: unit, Quantity: req.Quantity, SubtotalCents: unit * int64(req.Quantity)}, nil
+	subtotal := unit * int64(req.Quantity)
+	if req.MaxTotalCents != nil && (*req.MaxTotalCents < 0 || subtotal > *req.MaxTotalCents) {
+		return Item{}, ErrInvalid
+	}
+	return Item{ProductID: product.ID, ProductName: product.Title, UnitPriceCents: unit, Quantity: req.Quantity, SubtotalCents: subtotal}, nil
 }
 
 // Total valida os snapshots de itens e soma subtotais sem overflow.

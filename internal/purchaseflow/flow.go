@@ -21,7 +21,7 @@ var (
 	knownProductPattern    = regexp.MustCompile(`(?i)\b([1-9][0-9]{0,2})\s+(smartphones?|celulares?|laptops?|notebooks?|carros?)\b`)
 	otherCurrencyWords     = regexp.MustCompile(`(?i)\b(reais|euros?|libras?)\b`)
 	singleCarPattern       = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco|um)\s+)*carro(?:\s+(?:de\s+)?at[eé]\s+(?:US\$\s*)?[0-9][0-9.,]*\s*(?:d[oó]lares?|usd)?(?:\s+cada)?)?\s*[.!?]?\s*$`)
-	bareCarPricePattern    = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco|um)\s+)*carro\s+(?:por\s+)?(?:(?:US\$\s*)?([0-9][0-9.,]*)\s+(?:d[oó]lares?|usd)|US\$\s*([0-9][0-9.,]*))(?:\s+cada)?\s*[.!?]?\s*$`)
+	bareCarPricePattern    = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco|um)\s+)*carro\s+(?:(?:de|por)\s+)?(?:(?:US\$\s*)?([0-9][0-9.,]*)\s+(?:d[oó]lares?|usd)|US\$\s*([0-9][0-9.,]*))(?:\s+cada)?\s*[.!?]?\s*$`)
 	simplePluralCarPattern = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco)\s+)?carros(?:\s+(?:de\s+)?at[eé]\s+(?:(?:US\$|R\$)\s*)?[0-9][0-9.,]*\s*(?:d[oó]lares?|usd|reais|euros?)?)?\s*[.!?]?\s*$`)
 	simpleOrderPattern     = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco)\s+)?[1-9][0-9]{0,2}\s+(?:carros?|celulares?|smartphones?|laptops?|notebooks?)\s+(?:de\s+)?at[eé]\s+(?:US\$\s*)?[0-9][0-9.,]*\s*(?:d[oó]lares?|usd)?(?:\s+cada)?\s*[.!?]?\s*$`)
 	unitLimitPattern       = regexp.MustCompile(`(?i)\bat[eé]\s+(?:US\$\s*)?([0-9][0-9.,]*)`)

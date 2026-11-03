@@ -401,7 +401,7 @@ func TestBareCarPriceContinuation(t *testing.T) {
 	}}
 	flow, _ := New(decider, &stubDetails{products: map[int]catalog.Product{169: vehicle},
 		searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}}}, &stubStore{})
-	first, err := flow.Start(context.Background(), "", "carro 100 dolares")
+	first, err := flow.Start(context.Background(), "", "um carro de 100 dolares")
 	if err != nil || first.Type != "no_match" || !strings.Contains(first.Message, "US$ 100,00") ||
 		strings.Contains(first.Message, "Quantos carros") {
 		t.Fatalf("pedido singular com preço direto inesperado: %+v, %v", first, err)
@@ -511,14 +511,19 @@ func TestSimpleOrderAfterCarInquiry(t *testing.T) {
 
 // TestSingularCarPattern não interpreta pedidos mistos ou qualificados como um carro simples.
 func TestSingularCarPattern(t *testing.T) {
-	for _, message := range []string{"carro e laptop até 100 dólares", "carro elétrico até 100 dólares", "carros até 100 dólares", "carro 2024"} {
+	for _, message := range []string{"carro e laptop até 100 dólares", "carro elétrico até 100 dólares", "um carro elétrico de 100 dólares", "um carro de 100 reais", "um carro de 2024", "carros até 100 dólares", "carro 2024"} {
 		if _, _, ok := knownCategoryQuantity(message); ok {
 			t.Errorf("pedido ambíguo inferido: %q", message)
 		}
 	}
 	for _, test := range []struct{ message, price string }{
 		{"carro 100 dolares", "100"},
+		{"um carro de 100 dolares", "100"},
+		{"quero um carro de US$ 100", "100"},
+		{"preciso de um carro por US$ 100", "100"},
+		{"um carro de até 100 dólares", "100"},
 		{"quero um carro por 25.000 dólares", "25000"},
+		{"um carro de 25.000 dólares", "25000"},
 		{"carro US$ 25.000", "25000"},
 		{"carro até US$ 25.000", "25000"},
 	} {

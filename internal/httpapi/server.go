@@ -14,6 +14,7 @@ import (
 	"time"
 
 	openai "github.com/openai/openai-go/v3"
+	"github.com/picolitios/agente-de-compras-fde/internal/evaluation"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseagent"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseflow"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
@@ -35,6 +36,13 @@ type healthChecker interface {
 	Ping(context.Context) error
 }
 
+// AgentInfo identifica o provedor e modelo em uso sem expor credenciais.
+type AgentInfo struct {
+	Name     string `json:"nome"`
+	Provider string `json:"provedor"`
+	Model    string `json:"modelo"`
+}
+
 // Server converte o fluxo de compras em uma API JSON com limites e logs seguros.
 type Server struct {
 	chat    Chat
@@ -42,14 +50,16 @@ type Server struct {
 	health  healthChecker
 	logger  *slog.Logger
 	timeout time.Duration
+	agent   AgentInfo
 }
 
 // New valida dependências antes de registrar rotas HTTP.
-func New(chat Chat, history History, health healthChecker, logger *slog.Logger, timeout time.Duration) (*Server, error) {
-	if chat == nil || history == nil || health == nil || logger == nil || timeout <= 0 {
+func New(chat Chat, history History, health healthChecker, logger *slog.Logger, timeout time.Duration, agent AgentInfo) (*Server, error) {
+	if chat == nil || history == nil || health == nil || logger == nil || timeout <= 0 ||
+		agent.Name == "" || agent.Provider == "" || agent.Model == "" {
 		return nil, errors.New("configuração HTTP inválida")
 	}
-	return &Server{chat: chat, history: history, health: health, logger: logger, timeout: timeout}, nil
+	return &Server{chat: chat, history: history, health: health, logger: logger, timeout: timeout, agent: agent}, nil
 }
 
 // Handler registra os endpoints e injeta limite de duração e ID em cada requisição.
@@ -60,6 +70,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /requisicoes/{id}", s.get)
 	mux.HandleFunc("POST /requisicoes/{id}/confirmar", s.confirm)
 	mux.HandleFunc("GET /health", s.check)
+	mux.HandleFunc("GET /avaliacao", s.evaluationCases)
+	mux.HandleFunc("POST /avaliacao/{id}", s.evaluate)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := purchases.NewID()
 		if err != nil {
@@ -78,6 +90,26 @@ func (s *Server) Handler() http.Handler {
 		s.logger.Info("requisição HTTP concluída", "request_id", id, "method", r.Method,
 			"path", r.URL.Path, "status", tracked.status, "duration_ms", time.Since(start).Milliseconds())
 	})
+}
+
+// evaluationCases publica cinco pedidos fixos e a identidade do modelo configurado.
+func (s *Server) evaluationCases(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"agente": s.agent, "casos": evaluation.Cases()})
+}
+
+// evaluate executa um pedido isolado e pontua a resposta sem confirmar a proposta.
+func (s *Server) evaluate(w http.ResponseWriter, r *http.Request) {
+	test, ok := evaluation.Find(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Caso de avaliação não encontrado.")
+		return
+	}
+	response, err := s.chat.Start(r.Context(), "", test.Request)
+	if err != nil {
+		s.handleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, evaluation.Score(test, response))
 }
 
 type statusWriter struct {

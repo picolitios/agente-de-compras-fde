@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { confirmProposal, listPurchases, sendMessage } from "./api";
 import ProposalCard from "./components/ProposalCard";
 import HistoryPanel from "./components/HistoryPanel";
+import EvaluationPanel from "./components/EvaluationPanel";
+import ToolTimeline from "./components/ToolTimeline";
 import type { ChatResponse, Purchase, Selection } from "./types";
 
 interface Message {
@@ -192,20 +194,10 @@ export default function App() {
                 )}
                 <div className="message-content">
                   <div className="message-bubble">{message.text}</div>
-                  {message.reply?.ferramentas &&
-                    message.reply.ferramentas.length > 0 && (
-                      <div
-                        className="tool-calls"
-                        aria-label="Ferramentas chamadas pelo agente"
-                      >
-                        <span>Ferramentas chamadas:</span>
-                        <ol>
-                          {message.reply.ferramentas.map((tool, index) => (
-                            <li key={`${tool}-${index}`}>{tool}</li>
-                          ))}
-                        </ol>
-                      </div>
-                    )}
+                  <ToolTimeline
+                    events={message.reply?.execucoes}
+                    title="Consultas MCP"
+                  />
                   {message.reply && (
                     <ProposalCard
                       reply={message.reply}
@@ -215,20 +207,19 @@ export default function App() {
                       onConfirm={confirm}
                     />
                   )}
-                  {message.purchase?.ferramentas &&
-                    message.purchase.ferramentas.length > 0 && (
-                      <div
-                        className="tool-calls"
-                        aria-label="Ferramentas chamadas na confirmação"
-                      >
-                        <span>Na confirmação:</span>
-                        <ol>
-                          {message.purchase.ferramentas.map((tool, index) => (
-                            <li key={`${tool}-${index}`}>{tool}</li>
-                          ))}
-                        </ol>
-                      </div>
-                    )}
+                  <ToolTimeline
+                    events={message.purchase?.execucoes}
+                    title="Confirmação via MCP"
+                    result={
+                      message.purchase
+                        ? message.purchase.execucoes?.some(
+                            (event) => event.ferramenta === "criar_requisicao",
+                          )
+                          ? `criar_requisicao registrou ${message.purchase.request_number}.`
+                          : `Requisição ${message.purchase.request_number} já estava registrada.`
+                        : undefined
+                    }
+                  />
                 </div>
               </div>
             ))}
@@ -284,15 +275,18 @@ export default function App() {
             </p>
           </div>
         </section>
-        <HistoryPanel
-          purchases={history}
-          loading={historyLoading}
-          error={historyError}
-          offset={historyOffset}
-          hasMore={hasMore}
-          onPage={setHistoryOffset}
-          onRetry={() => setHistoryVersion((version) => version + 1)}
-        />
+        <div className="side-panel">
+          <EvaluationPanel />
+          <HistoryPanel
+            purchases={history}
+            loading={historyLoading}
+            error={historyError}
+            offset={historyOffset}
+            hasMore={hasMore}
+            onPage={setHistoryOffset}
+            onRetry={() => setHistoryVersion((version) => version + 1)}
+          />
+        </div>
       </main>
     </div>
   );

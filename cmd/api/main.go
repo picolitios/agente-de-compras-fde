@@ -167,7 +167,8 @@ func main() {
 		logger.Error("configurar fluxo", "error", err)
 		os.Exit(1)
 	}
-	api, err := httpapi.New(flow, repository, pool, logger, cfg.requestTimeout)
+	api, err := httpapi.New(flow, repository, pool, logger, cfg.requestTimeout,
+		httpapi.AgentInfo{Name: "purchase_agent", Provider: cfg.provider, Model: modelName})
 	if err != nil {
 		logger.Error("configurar API", "error", err)
 		os.Exit(1)

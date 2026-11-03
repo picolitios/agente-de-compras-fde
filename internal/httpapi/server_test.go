@@ -53,7 +53,8 @@ func (h testHealth) Ping(context.Context) error { return h.err }
 func newHandler(t *testing.T, chat *testChat, health testHealth) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	api, err := New(chat, testHistory{purchase: purchases.Purchase{ID: 1, RequestNumber: "REQ-000001"}}, health, logger, time.Second)
+	api, err := New(chat, testHistory{purchase: purchases.Purchase{ID: 1, RequestNumber: "REQ-000001"}}, health, logger, time.Second,
+		AgentInfo{Name: "purchase_agent", Provider: "ollama", Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +88,35 @@ func TestCreateAndConfirm(t *testing.T) {
 	handler.ServeHTTP(legacy, httptest.NewRequest(http.MethodPost, "/requisicoes/proposal-id/confirmar", nil))
 	if legacy.Code != http.StatusOK || chat.selections != nil {
 		t.Fatalf("confirmação antiga inválida: %d", legacy.Code)
+	}
+}
+
+// TestEvaluationRoutes mantém script e interface ligados aos mesmos cinco critérios.
+func TestEvaluationRoutes(t *testing.T) {
+	chat := &testChat{response: purchaseflow.Response{Type: "no_match", Message: "Há carros no catálogo", ConversationID: "abc"}}
+	handler := newHandler(t, chat, testHealth{})
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/avaliacao", nil))
+	var payload struct {
+		Agent AgentInfo `json:"agente"`
+		Cases []struct {
+			ID      string `json:"id"`
+			Request string `json:"pedido"`
+		} `json:"casos"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &payload); err != nil || list.Code != http.StatusOK ||
+		payload.Agent.Model != "test-model" || len(payload.Cases) != 5 {
+		t.Fatalf("casos inválidos: %+v, %v", payload, err)
+	}
+	result := httptest.NewRecorder()
+	handler.ServeHTTP(result, httptest.NewRequest(http.MethodPost, "/avaliacao/carro_fora_do_orcamento", nil))
+	if result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `"acertou":true`) || chat.message != "um carro de 100 dólares" {
+		t.Fatalf("avaliação inválida: %d %s", result.Code, result.Body.String())
+	}
+	unknown := httptest.NewRecorder()
+	handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodPost, "/avaliacao/desconhecido", nil))
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("caso desconhecido aceito: %d", unknown.Code)
 	}
 }
 

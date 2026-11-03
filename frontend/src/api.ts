@@ -3,6 +3,8 @@ import type {
   HistoryResponse,
   Purchase,
   Selection,
+  EvaluationCatalog,
+  EvaluationResult,
 } from "./types";
 
 interface APIError {
@@ -60,4 +62,14 @@ export function listPurchases(
   limit = 10,
 ): Promise<HistoryResponse> {
   return request(`/requisicoes?limit=${limit}&offset=${offset}`);
+}
+
+// Os casos e o modelo vêm do servidor para manter script e tela consistentes.
+export function getEvaluation(): Promise<EvaluationCatalog> {
+  return request("/avaliacao");
+}
+
+// Cada caso inicia uma conversa de teste sem confirmar propostas.
+export function evaluateCase(id: string): Promise<EvaluationResult> {
+  return request(`/avaliacao/${encodeURIComponent(id)}`, { method: "POST" });
 }

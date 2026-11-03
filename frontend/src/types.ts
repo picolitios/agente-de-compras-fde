@@ -30,6 +30,13 @@ export interface Selection {
   quantidade: number;
 }
 
+export interface ToolEvent {
+  origem: "agente" | "backend";
+  ferramenta: string;
+  produto_id?: number;
+  termo?: string;
+}
+
 export interface Purchase {
   id: number;
   request_number: string;
@@ -40,6 +47,7 @@ export interface Purchase {
   created_at: string;
   items: Item[];
   ferramentas?: string[];
+  execucoes?: ToolEvent[];
 }
 
 export interface ChatResponse {
@@ -47,6 +55,7 @@ export interface ChatResponse {
   mensagem: string;
   conversa_id: string;
   ferramentas?: string[];
+  execucoes?: ToolEvent[];
   produto_selecionado_id?: number;
   produtos?: Product[];
   proposta?: Proposal;
@@ -56,4 +65,18 @@ export interface HistoryResponse {
   requisicoes: Purchase[];
   limit: number;
   offset: number;
+}
+
+export interface EvaluationCatalog {
+  agente: { nome: string; provedor: string; modelo: string };
+  casos: { id: string; pedido: string }[];
+}
+
+export interface EvaluationResult {
+  id: string;
+  pedido: string;
+  acertou: boolean;
+  esperado: string;
+  obtido: string;
+  motivo?: string;
 }

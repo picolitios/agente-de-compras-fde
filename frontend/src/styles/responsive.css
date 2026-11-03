@@ -39,9 +39,11 @@
   .composer-wrap {
     padding: 14px 16px 18px;
   }
-  .history-panel {
+  .side-panel {
     border-left: 0;
     border-top: 1px solid #e3e5dd;
+  }
+  .history-panel {
     padding: 30px 18px;
   }
   .message-content {

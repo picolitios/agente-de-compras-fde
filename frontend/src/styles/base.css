@@ -111,3 +111,8 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
 }
+.side-panel {
+  min-width: 0;
+  background: #f5f3ee;
+  border-left: 1px solid #e3e5dd;
+}

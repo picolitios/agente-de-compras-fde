@@ -1,7 +1,7 @@
 .history-panel {
   padding: 36px 24px;
   background: #f5f3ee;
-  border-left: 1px solid #e3e5dd;
+  border-top: 1px solid #e3e5dd;
 }
 .section-header {
   display: flex;

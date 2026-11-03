@@ -2,19 +2,103 @@
 
 MVP de requisições de compra em linguagem natural. O agente Go com Google ADK consulta um catálogo de demonstração por MCP; o backend valida os produtos, calcula os valores em USD e grava a requisição no PostgreSQL somente após confirmação explícita. O registro **não realiza uma compra comercial**.
 
-## Executar com Docker
+## Início rápido: modelo local, sem chave de API
 
-Pré-requisitos: Docker com Compose e [Ollama](https://docs.ollama.com/api/openai-compatibility) rodando no computador. O modelo local precisa aceitar chamadas de ferramentas; o padrão é `qwen3:4b-instruct` (download de aproximadamente 2,5 GB).
+Este é o caminho recomendado para avaliar o projeto. Docker executa frontend, API Go, servidor MCP e PostgreSQL; [Ollama](https://ollama.com/download) executa o modelo no computador. A API cria as tabelas automaticamente ao iniciar. A busca de produtos usa a DummyJSON pela internet, então é necessário acesso à rede durante o teste.
 
-1. Copie `.env.example` para `.env`.
-2. No `.env` local, preencha `POSTGRES_PASSWORD` e a mesma senha em `DATABASE_URL`. Defina `MCP_WRITE_SECRET` com pelo menos 32 caracteres aleatórios; API e MCP usam esse segredo apenas para autorizar a confirmação. A chave OpenRouter não é necessária no modo local. Nunca inclua o `.env` no Git.
-3. Inicie o Ollama e execute `ollama pull qwen3:4b-instruct` uma vez no computador.
-4. Execute `docker compose up --build -d` na raiz do projeto.
-5. Abra `http://localhost:5173`. A API fica em `http://localhost:8080` e o servidor MCP em `http://localhost:8081/mcp`.
+### 1. Prepare o computador
 
-Para conferir o estado, use `docker compose ps` e `curl http://localhost:8080/health`. Para encerrar, use `docker compose down`; o volume do PostgreSQL é preservado.
+- Instale Git, Docker Desktop (Windows/macOS) ou Docker Engine com Compose v2 (Linux) e deixe o Docker em execução. Confira com `docker compose version` e `docker info`.
+- Instale e inicie Ollama. Confira com `ollama --version`. O modelo padrão, `qwen3:4b-instruct`, ocupa aproximadamente 2,5 GB para download; reserve espaço e memória para executá-lo.
+- Para obter o código, execute em um terminal:
 
-As portas externas ficam restritas a `127.0.0.1` e podem ser alteradas com `FRONTEND_PORT`, `API_PORT` e `MCP_PORT` no `.env`. A API acessa o Ollama do computador por `host.docker.internal:11434`; o Ollama não precisa ser exposto na rede externa. O frontend encaminha `/api/*` para o serviço Go no Compose. O modo local não injeta a chave OpenRouter no container da API.
+```sh
+git clone https://github.com/picolitios/agente-de-compras-fde.git
+cd agente-de-compras-fde
+```
+
+Enquanto esta entrega estiver apenas no [PR #1](https://github.com/picolitios/agente-de-compras-fde/pull/1), execute `git switch feature/purchase-agent-mvp` após o clone; a branch `main` ainda contém a versão inicial. Depois do merge, use `main` normalmente. Se você recebeu a pasta do projeto por outro meio, entre nela e continue. Não é necessário instalar Go, Node ou PostgreSQL no computador para o caminho com Docker.
+
+### 2. Configure as variáveis locais
+
+Crie o arquivo `.env` a partir do exemplo:
+
+| Terminal             | Comando                       |
+| -------------------- | ----------------------------- |
+| PowerShell (Windows) | `Copy-Item .env.example .env` |
+| macOS/Linux          | `cp .env.example .env`        |
+
+Abra `.env` no editor de sua preferência e substitua **todos** os valores `replace-me` relevantes ao modo local:
+
+```dotenv
+OPENROUTER_API_KEY=
+POSTGRES_PASSWORD=SENHA_ALFANUMERICA_FORTE
+DATABASE_URL=postgres://purchases:SENHA_ALFANUMERICA_FORTE@db:5432/purchases?sslmode=disable
+MCP_WRITE_SECRET=SEGREDO_ALEATORIO_COM_PELO_MENOS_32_CARACTERES
+```
+
+Use a **mesma senha** nas linhas `POSTGRES_PASSWORD` e `DATABASE_URL`. Para simplificar a URL, escolha uma senha alfanumérica; caracteres especiais exigem codificação de URL. `MCP_WRITE_SECRET` precisa ter ao menos 32 caracteres aleatórios. Você pode gerá-lo com um gerenciador de senhas, `openssl rand -hex 32` no macOS/Linux ou este comando no PowerShell:
+
+```powershell
+$bytes = New-Object byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+([BitConverter]::ToString($bytes)).Replace('-', '')
+```
+
+Copie o valor gerado para o `.env`; não o coloque em commits, issues ou capturas de tela. O arquivo já está no `.gitignore`. `OPENROUTER_API_KEY` pode ficar vazio: o Compose padrão usa Ollama e não envia essa variável à API.
+
+### 3. Baixe e confira o modelo
+
+No Windows/macOS, abra o aplicativo Ollama. No Linux, inicie o serviço Ollama antes do comando abaixo. Em seguida, execute:
+
+```sh
+ollama pull qwen3:4b-instruct
+ollama list
+```
+
+Confirme que `qwen3:4b-instruct` aparece na lista. Se o Ollama estiver desligado, a API poderá subir, mas o chat responderá que o modelo está indisponível.
+
+**Linux:** o contêiner precisa alcançar o Ollama no host. Se você usa o Ollama via CLI, inicie-o em outro terminal com `OLLAMA_HOST=0.0.0.0:11434 ollama serve` antes de baixar o modelo. Se usa o serviço systemd, execute `sudo systemctl edit ollama.service`, adicione as linhas abaixo, salve e execute `sudo systemctl daemon-reload` e `sudo systemctl restart ollama`:
+
+```ini
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+```
+
+Restrinja a porta 11434 no firewall à máquina local/rede Docker. Nos comandos Docker abaixo, acrescente `-f compose.yaml -f compose.linux.yaml` depois de `docker compose`. Windows/macOS com Docker Desktop usam somente `compose.yaml`. Consulte a [configuração oficial do Ollama](https://docs.ollama.com/faq) e a [explicação do Docker sobre `host-gateway`](https://docs.docker.com/compose/how-tos/networking/) se precisar adaptar a rede.
+
+### 4. Suba o projeto
+
+Na raiz do projeto, execute:
+
+```sh
+docker compose config -q
+docker compose up --build -d
+docker compose ps
+```
+
+No Linux, use `docker compose -f compose.yaml -f compose.linux.yaml` nos três comandos. Aguarde `db` e `api` aparecerem como **healthy** em `docker compose ps`; a primeira execução pode demorar enquanto as imagens são construídas. Nenhuma migration manual é necessária.
+
+Abra [http://localhost:5173](http://localhost:5173). Confira também [http://localhost:8080/health](http://localhost:8080/health): a resposta esperada é `{"status":"ok"}`. Se você mudou `FRONTEND_PORT` ou `API_PORT` no `.env`, use as portas escolhidas. O MCP fica em `http://localhost:8081/mcp`; não é preciso acessá-lo diretamente para testar o chat.
+
+### 5. Faça o pedido de exemplo
+
+No chat, envie **“Preciso de 3 laptops até US$ 2.000 cada.”**. Espere a proposta com opções do catálogo. Escolha pelo menos três unidades entre os produtos exibidos e clique em **Confirmar requisição**. O resultado esperado é uma requisição `REQ-...` no chat e no **Histórico**, com total calculado pelo backend. Isso é um registro de demonstração, sem compra real. A trilha da mensagem mostra `buscar_produtos` e as verificações `detalhar_produto(id)`; a confirmação mostra `criar_requisicao`.
+
+Para testar sem registrar uma requisição, use **Executar 5 pedidos** no painel lateral. Ele mostra agente, modelo, resultado de cada pedido e placar. O modelo pode levar até 180 segundos por pedido; os cinco testes podem demorar alguns minutos. O mesmo teste está disponível no PowerShell 7 com `pwsh -NoProfile -File scripts/eval_five_requests.ps1`.
+
+### Problemas comuns
+
+| Sintoma                                             | Verificação e ação                                                                                                                                                             |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Docker não inicia                                   | Confira `docker info`; abra o Docker Desktop ou inicie o serviço Docker.                                                                                                       |
+| API não fica saudável                               | Execute `docker compose ps` e `docker compose logs --tail=100 api mcp db`. Confira senha, URL e segredo no `.env`. No Linux, acrescente os dois arquivos Compose aos comandos. |
+| Chat informa modelo indisponível ou demora demais   | Confira `ollama list` e se o Ollama está em execução. Verifique `docker compose logs --tail=100 api`; no Linux, confira `OLLAMA_HOST` e a porta 11434.                         |
+| Catálogo indisponível                               | Confira a conexão à internet e tente novamente; os produtos vêm da DummyJSON.                                                                                                  |
+| Porta 5173, 8080 ou 8081 ocupada                    | Troque `FRONTEND_PORT`, `API_PORT` ou `MCP_PORT` no `.env` e execute `docker compose up -d` novamente.                                                                         |
+| Senha do banco alterada depois da primeira execução | Reutilize a senha original do volume existente. `docker compose down -v` apaga os dados locais; use-o apenas se quiser realmente reiniciar o banco.                            |
+
+Para encerrar, execute `docker compose down` (no Linux, inclua os dois arquivos). O volume do PostgreSQL é preservado. As portas publicadas pelo Compose ficam restritas a `127.0.0.1` no computador. O frontend encaminha `/api/*` para o serviço Go; o navegador não recebe segredos.
 
 ### Voltar ao OpenRouter
 
@@ -45,15 +129,15 @@ O agente não tem acesso direto ao banco. O frontend envia apenas mensagem, ID d
 
 ## API
 
-| Método | Rota | Uso |
-| --- | --- | --- |
-| `POST` | `/requisicoes` | Envia `{"mensagem":"...","conversa_id":""}`; o ID é opcional no primeiro pedido. |
-| `POST` | `/requisicoes/{id}/confirmar` | Confirma com `{"itens":[{"produto_id":78,"quantidade":1}]}`. Sem corpo, confirma a sugestão original para compatibilidade. Não aceita preços do cliente. |
-| `GET` | `/requisicoes?limit=20&offset=0` | Consulta requisições registradas. |
-| `GET` | `/requisicoes/{id}` | Consulta uma requisição pelo ID numérico. |
-| `GET` | `/health` | Verifica a disponibilidade da API e do banco. |
-| `GET` | `/avaliacao` | Lista os cinco pedidos de teste e informa agente, provedor e modelo configurados. |
-| `POST` | `/avaliacao/{id}` | Executa um pedido de teste isolado e devolve o acerto, sem confirmar a proposta. |
+| Método | Rota                             | Uso                                                                                                                                                      |
+| ------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/requisicoes`                   | Envia `{"mensagem":"...","conversa_id":""}`; o ID é opcional no primeiro pedido.                                                                         |
+| `POST` | `/requisicoes/{id}/confirmar`    | Confirma com `{"itens":[{"produto_id":78,"quantidade":1}]}`. Sem corpo, confirma a sugestão original para compatibilidade. Não aceita preços do cliente. |
+| `GET`  | `/requisicoes?limit=20&offset=0` | Consulta requisições registradas.                                                                                                                        |
+| `GET`  | `/requisicoes/{id}`              | Consulta uma requisição pelo ID numérico.                                                                                                                |
+| `GET`  | `/health`                        | Verifica a disponibilidade da API e do banco.                                                                                                            |
+| `GET`  | `/avaliacao`                     | Lista os cinco pedidos de teste e informa agente, provedor e modelo configurados.                                                                        |
+| `POST` | `/avaliacao/{id}`                | Executa um pedido de teste isolado e devolve o acerto, sem confirmar a proposta.                                                                         |
 
 Erros da API usam `{"erro":{"codigo":"...","mensagem":"..."}}`. Propostas expiradas ou alteradas recebem HTTP 409; falhas de catálogo ou limite do provedor recebem 503. O backend limita tamanho da mensagem, duração da requisição, chamadas do modelo e paginação.
 `POST /requisicoes` mantém `ferramentas` com os nomes chamados pelo agente e inclui `execucoes` com a sequência completa das chamadas MCP observadas, origem (`agente` ou `backend`) e termo ou ID quando aplicável. A confirmação também devolve `execucoes`. Consultas internas à DummyJSON feitas dentro de `criar_requisicao` não são chamadas MCP adicionais.

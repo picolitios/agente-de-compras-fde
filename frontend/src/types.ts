@@ -45,6 +45,7 @@ export interface ChatResponse {
   tipo: "clarify" | "no_match" | "proposal";
   mensagem: string;
   conversa_id: string;
+  ferramentas?: string[];
   produto_selecionado_id?: number;
   produtos?: Product[];
   proposta?: Proposal;

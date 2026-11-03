@@ -6,6 +6,7 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
@@ -89,7 +90,7 @@ func TestRepairMalformedFinal(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision, err := decider.Decide(context.Background(), "repair-test", "Quero 2 laptops até 2000 dólares")
-	if err != nil || decision.SelectedProductID != 78 || source.searches != 1 || primary.calls != 2 || repair.calls != 1 {
+	if err != nil || decision.SelectedProductID != 78 || source.searches != 1 || primary.calls != 2 || repair.calls != 1 || !reflect.DeepEqual(decision.ToolCalls, []string{"buscar_produtos"}) {
 		t.Fatalf("correção inesperada: decisão=%+v buscas=%d chamadas=%d/%d erro=%v", decision, source.searches, primary.calls, repair.calls, err)
 	}
 }
@@ -109,7 +110,7 @@ func TestADKToolCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision, err := decider.Decide(context.Background(), "conversation-1", "Preciso de 3 laptops")
-	if err != nil || decision.SelectedProductID != 78 || source.searches != 1 || model.calls != 2 {
+	if err != nil || decision.SelectedProductID != 78 || source.searches != 1 || model.calls != 2 || !reflect.DeepEqual(decision.ToolCalls, []string{"buscar_produtos"}) {
 		t.Fatalf("ciclo ADK inesperado: %+v, buscas=%d, chamadas=%d, erro=%v", decision, source.searches, model.calls, err)
 	}
 }

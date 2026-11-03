@@ -103,12 +103,15 @@ func validDecision() purchaseagent.Decision {
 func TestProposalAndConfirmation(t *testing.T) {
 	store := &stubStore{}
 	details := &stubDetails{product: catalog.Product{ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99"}}
-	flow, err := New(stubDecider{validDecision()}, details, store)
+	decision := validDecision()
+	decision.ToolCalls = []string{"buscar_produtos", "detalhar_produto"}
+	flow, err := New(stubDecider{decision}, details, store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	response, err := flow.Start(context.Background(), "", "Preciso de 3 laptops até US$ 2000 cada")
-	if err != nil || response.Type != "proposal" || response.Proposal == nil || response.Proposal.TotalCents != 599997 || store.confirms != 0 {
+	if err != nil || response.Type != "proposal" || response.Proposal == nil || response.Proposal.TotalCents != 599997 || store.confirms != 0 ||
+		len(response.ToolCalls) != 2 || response.ToolCalls[0] != "buscar_produtos" || response.ToolCalls[1] != "detalhar_produto" {
 		t.Fatalf("proposta inesperada: %+v, %v", response, err)
 	}
 	confirmed, err := flow.Confirm(context.Background(), response.Proposal.ID, nil)
@@ -582,12 +585,13 @@ func TestPluralCarInquiry(t *testing.T) {
 	vehicle := catalog.Product{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"}
 	for _, status := range []string{"clarify", "no_match", "select"} {
 		t.Run(status, func(t *testing.T) {
-			decision := purchaseagent.Decision{Status: status, Message: "Não há carros", Category: "carros", Quantity: 5}
+			decision := purchaseagent.Decision{Status: status, Message: "Não há carros", Category: "carros", Quantity: 5, ToolCalls: []string{"buscar_produtos"}}
 			flow, _ := New(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{
 				"category:vehicle": {vehicle},
 			}}, &stubStore{})
 			response, err := flow.Start(context.Background(), "", "carros até 100 dolares")
 			if err != nil || response.Type != "clarify" || response.Proposal != nil ||
+				len(response.ToolCalls) != 1 || response.ToolCalls[0] != "buscar_produtos" ||
 				!strings.Contains(response.Message, "Há carros no catálogo") ||
 				!strings.Contains(response.Message, "US$ 24999,99") ||
 				!strings.Contains(response.Message, "Quantos carros") {

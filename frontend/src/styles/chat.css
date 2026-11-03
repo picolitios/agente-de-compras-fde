@@ -142,6 +142,26 @@
   color: #fff;
   border-radius: 16px 5px 16px 16px;
 }
+.tool-calls {
+  margin: 7px 0 0 3px;
+  color: #62746a;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.tool-calls ol {
+  display: inline;
+  list-style: none;
+  margin: 0 0 0 4px;
+  padding: 0;
+}
+.tool-calls li {
+  display: inline;
+  font-family: monospace;
+}
+.tool-calls li + li::before {
+  content: " → ";
+  font-family: sans-serif;
+}
 .waiting {
   color: #6b7c70;
 }

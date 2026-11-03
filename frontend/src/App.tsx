@@ -192,6 +192,20 @@ export default function App() {
                 )}
                 <div className="message-content">
                   <div className="message-bubble">{message.text}</div>
+                  {message.reply?.ferramentas &&
+                    message.reply.ferramentas.length > 0 && (
+                      <div
+                        className="tool-calls"
+                        aria-label="Ferramentas chamadas pelo agente"
+                      >
+                        <span>Ferramentas chamadas:</span>
+                        <ol>
+                          {message.reply.ferramentas.map((tool, index) => (
+                            <li key={`${tool}-${index}`}>{tool}</li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
                   {message.reply && (
                     <ProposalCard
                       reply={message.reply}

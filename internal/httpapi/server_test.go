@@ -62,7 +62,7 @@ func newHandler(t *testing.T, chat *testChat, health testHealth) http.Handler {
 
 // TestCreateAndConfirm cobre os dois endpoints do fluxo sem acesso a serviços externos.
 func TestCreateAndConfirm(t *testing.T) {
-	chat := &testChat{response: purchaseflow.Response{Type: "clarify", Message: "Qual quantidade?", ConversationID: "abc"},
+	chat := &testChat{response: purchaseflow.Response{Type: "clarify", Message: "Qual quantidade?", ConversationID: "abc", ToolCalls: []string{"buscar_produtos"}},
 		purchase: purchases.Purchase{ID: 1, RequestNumber: "REQ-000001", TotalCents: 599997}}
 	handler := newHandler(t, chat, testHealth{})
 	req := httptest.NewRequest(http.MethodPost, "/requisicoes", strings.NewReader(`{"mensagem":"3 laptops"}`))
@@ -73,7 +73,7 @@ func TestCreateAndConfirm(t *testing.T) {
 		t.Fatalf("POST inválido: %d %s", recorder.Code, recorder.Body.String())
 	}
 	var response purchaseflow.Response
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Type != "clarify" {
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Type != "clarify" || len(response.ToolCalls) != 1 || response.ToolCalls[0] != "buscar_produtos" {
 		t.Fatalf("resposta inválida: %+v, %v", response, err)
 	}
 	confirm := httptest.NewRecorder()

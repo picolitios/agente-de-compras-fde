@@ -42,6 +42,7 @@ type Decision struct {
 	Unverifiable        []string `json:"unverifiable"`
 	SelectedProductID   int      `json:"selected_product_id"`
 	CandidateProductIDs []int    `json:"candidate_product_ids"`
+	ToolCalls           []string `json:"-"`
 }
 
 // ADKDecider executa um único agente ADK com ferramentas de catálogo remotas.
@@ -92,11 +93,21 @@ func (d *ADKDecider) Decide(ctx context.Context, conversationID, message string)
 		return Decision{}, fmt.Errorf("criar runner ADK: %w", err)
 	}
 	var final string
+	var toolCalls []string
 	for event, err := range r.Run(ctx, "demo", conversationID, genai.NewContentFromText(message, genai.RoleUser), agent.RunConfig{}) {
 		if err != nil {
 			return Decision{}, fmt.Errorf("executar agente ADK: %w", err)
 		}
-		if event == nil || !event.IsFinalResponse() || event.Content == nil {
+		if event == nil || event.Content == nil {
+			continue
+		}
+		// Os nomes vêm dos eventos reais de chamada, não do JSON escrito pelo modelo.
+		for _, part := range event.Content.Parts {
+			if part != nil && part.FunctionCall != nil {
+				toolCalls = append(toolCalls, part.FunctionCall.Name)
+			}
+		}
+		if !event.IsFinalResponse() {
 			continue
 		}
 		for _, part := range event.Content.Parts {
@@ -110,9 +121,12 @@ func (d *ADKDecider) Decide(ctx context.Context, conversationID, message string)
 	}
 	decision, err := parseDecision(final)
 	if err == nil || !errors.Is(err, ErrInvalidDecision) || d.repairModel == nil || modelCalls >= d.maxModelCalls {
+		decision.ToolCalls = toolCalls
 		return decision, err
 	}
-	return d.repairDecision(ctx, message, final)
+	decision, err = d.repairDecision(ctx, message, final)
+	decision.ToolCalls = toolCalls
+	return decision, err
 }
 
 // repairDecision solicita uma única correção de formato sem ferramentas nem novos dados de catálogo.

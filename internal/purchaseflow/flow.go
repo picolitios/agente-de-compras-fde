@@ -53,6 +53,7 @@ type Response struct {
 	Type              string              `json:"tipo"`
 	Message           string              `json:"mensagem"`
 	ConversationID    string              `json:"conversa_id"`
+	ToolCalls         []string            `json:"ferramentas,omitempty"`
 	SelectedProductID int                 `json:"produto_selecionado_id,omitempty"`
 	Products          []catalog.Product   `json:"produtos,omitempty"`
 	Proposal          *purchases.Proposal `json:"proposta,omitempty"`
@@ -148,9 +149,9 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		if available {
 			f.rememberCarClarification(conversationID, message)
 		}
-		return Response{Type: "clarify", Message: clarification, ConversationID: conversationID}, nil
+		return Response{Type: "clarify", Message: clarification, ConversationID: conversationID, ToolCalls: decision.ToolCalls}, nil
 	}
-	response := Response{Type: decision.Status, Message: decision.Message, ConversationID: conversationID}
+	response := Response{Type: decision.Status, Message: decision.Message, ConversationID: conversationID, ToolCalls: decision.ToolCalls}
 	// IDs fornecidos mesmo em uma resposta contraditória passam pela validação real do catálogo.
 	searchTerm := catalogSearchTerm(decision.Category)
 	if (decision.Status == "clarify" || decision.Status == "no_match") && decision.Category != "" && decision.Quantity > 0 &&

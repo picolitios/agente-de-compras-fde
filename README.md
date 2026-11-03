@@ -2,6 +2,18 @@
 
 MVP de requisições de compra em linguagem natural. O agente Go com Google ADK consulta um catálogo de demonstração por MCP; o backend valida os produtos, calcula os valores em USD e grava a requisição no PostgreSQL somente após confirmação explícita. O registro **não realiza uma compra comercial**.
 
+## Demonstração
+
+Capturas de um pedido de carro no modo local com Ollama e catálogo DummyJSON. A proposta mostra as opções verificadas e as chamadas MCP; após a confirmação, o backend revalida o produto e registra a requisição no PostgreSQL.
+
+**Proposta e ferramentas utilizadas**
+
+![Chat com proposta de carros e trilha das ferramentas MCP](docs/screenshots/proposta-e-ferramentas.png)
+
+**Requisição confirmada e histórico**
+
+![Requisição registrada, ferramenta criar_requisicao e histórico](docs/screenshots/requisicao-confirmada.png)
+
 ## Uso de IA no desenvolvimento
 
 Utilizei o **Codex (ChatGPT)** como ferramenta de produtividade para implementar funcionalidades, organizar o código, criar testes e investigar falhas. Antes da implementação, defini a arquitetura, as tecnologias e as responsabilidades de cada componente. Mantive a API que conversa com o LLM e o servidor MCP em serviços Go separados para deixar clara a divisão entre interpretação do pedido, consulta ao catálogo e persistência. A escolha de Go também veio do contato com a linguagem durante a entrevista.
@@ -40,7 +52,7 @@ git clone https://github.com/picolitios/agente-de-compras-fde.git
 cd agente-de-compras-fde
 ```
 
-Enquanto esta entrega estiver apenas no [PR #1](https://github.com/picolitios/agente-de-compras-fde/pull/1), execute `git switch feature/purchase-agent-mvp` após o clone; a branch `main` ainda contém a versão inicial. Depois do merge, use `main` normalmente. Se você recebeu a pasta do projeto por outro meio, entre nela e continue. Não é necessário instalar Go, Node ou PostgreSQL no computador para o caminho com Docker.
+Se você recebeu a pasta do projeto por outro meio, entre nela e continue. A branch `main` contém a versão pronta para avaliação. Não é necessário instalar Go, Node ou PostgreSQL no computador para o caminho com Docker.
 
 ### 2. Configure as variáveis locais
 

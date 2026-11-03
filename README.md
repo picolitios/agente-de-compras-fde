@@ -30,6 +30,7 @@ O tempo máximo de processamento de um pedido é configurado por `REQUEST_TIMEOU
 
 1. O usuário descreve categoria, quantidade e critérios no chat.
 2. O agente decide quando chamar `buscar_produtos` e `detalhar_produto` no servidor MCP. Essas ferramentas consultam a DummyJSON.
+   O chat mostra, em ordem, os nomes das ferramentas efetivamente chamadas pelo agente em cada resposta. Se ele não chamar nenhuma, a linha de ferramentas não aparece.
 3. O backend consulta as opções propostas pelo agente via MCP e completa a lista de smartphones, laptops ou veículos com uma busca própria no mesmo catálogo. Quando o modelo omite categoria e quantidade ou responde `clarify` para um pedido inequívoco dessas categorias, o backend recupera um par explícito como `4 smartphones` ou um carro no singular em um pedido simples como `carro até 100 dólares`. Para `carros` sem quantidade, verifica a existência e pede o número de unidades antes de propor. Um limite unitário simples e inequívoco no texto também prevalece sobre um valor omitido pelo modelo. Cada opção é revalidada por ID, filtrada pelos requisitos verificáveis e calculada em centavos.
 4. A interface mostra uma proposta com validade de 15 minutos. O usuário distribui pelo menos a quantidade pedida entre as opções, podendo aumentar o total até 1.000 unidades, e confirma em um botão separado.
 5. Na confirmação, o backend revalida cada produto escolhido, a quantidade mínima e o orçamento total, e persiste os snapshots em transação. A requisição recebe um número `REQ-...` e aparece no histórico paginado. Se nenhum item atender, o backend consulta novamente o catálogo: distingue produto indisponível de limite de preço baixo, apresenta preços verificados próximos e sugere alterar o pedido. A busca por carros usa a categoria `vehicle`, pois a busca textual da DummyJSON não encontra esses modelos.
@@ -53,11 +54,13 @@ O agente não tem acesso direto ao banco. O frontend envia apenas mensagem, ID d
 | `GET` | `/health` | Verifica a disponibilidade da API e do banco. |
 
 Erros da API usam `{"erro":{"codigo":"...","mensagem":"..."}}`. Propostas expiradas ou alteradas recebem HTTP 409; falhas de catálogo ou limite do provedor recebem 503. O backend limita tamanho da mensagem, duração da requisição, chamadas do modelo e paginação.
+`POST /requisicoes` pode incluir `ferramentas`, uma lista de nomes de chamadas MCP feitas pelo agente durante aquele pedido. Buscas adicionais de validação feitas pelo backend não entram nessa lista.
 
 ## Desenvolvimento e validação
 
 - Backend: Go 1.26.6. Execute `go test ./...` e `go vet ./...`. O teste de integração PostgreSQL usa `TEST_DATABASE_URL`; sem ela, esse teste é ignorado.
 - Conversas com o modelo local: após subir o Compose, execute `pwsh -NoProfile -File scripts/eval_conversations.ps1` para conferir os nove cenários sem registrar compras. Use `-Scenario preco_e_quantidade` para reproduzir apenas a conversa de carro e preço ou `-Repeat 2` para procurar falhas intermitentes; o script retorna erro quando um cenário falha.
+- Cinco pedidos independentes: execute `pwsh -NoProfile -File scripts/eval_five_requests.ps1` com a API ativa. O script confere tipo, requisitos e opções verificadas, mostra `Acertos: N/5` e retorna código 1 se houver falha. Ele não confirma propostas nem grava requisições.
 - Frontend: Node 24. Em `frontend/`, execute `npm ci`, `npm run dev`, `npm run build` e `npm run format:check`. O Vite encaminha `/api` para `http://localhost:8080` no desenvolvimento local.
 - Docker: `docker compose config -q` valida a configuração local sem imprimir os valores interpolados. `docker compose build` valida as três imagens próprias.
 
@@ -65,4 +68,4 @@ Os testes cobrem catálogo, ferramentas MCP, interpretação por ADK com modelo 
 
 ## Limites do MVP
 
-Há um agente, uma categoria por proposta, até cinco opções verificadas e até 1.000 unidades por requisição. As sessões de conversa ficam na memória da API, enquanto propostas e requisições ficam no PostgreSQL. O MVP não inclui autenticação, integrações reais de compra, RAG, filas, Kubernetes, ferramentas MCP de escrita ou avaliação automatizada de pedidos. Esses itens não são necessários para demonstrar a separação entre interpretação do modelo e validação transacional do backend.
+Há um agente, uma categoria por proposta, até cinco opções verificadas e até 1.000 unidades por requisição. As sessões de conversa ficam na memória da API, enquanto propostas e requisições ficam no PostgreSQL. O MVP não inclui autenticação, integrações reais de compra, RAG, filas, Kubernetes ou ferramentas MCP de escrita. Esses itens não são necessários para demonstrar a separação entre interpretação do modelo e validação transacional do backend.

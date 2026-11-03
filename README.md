@@ -2,6 +2,29 @@
 
 MVP de requisições de compra em linguagem natural. O agente Go com Google ADK consulta um catálogo de demonstração por MCP; o backend valida os produtos, calcula os valores em USD e grava a requisição no PostgreSQL somente após confirmação explícita. O registro **não realiza uma compra comercial**.
 
+## Uso de IA no desenvolvimento
+
+Utilizei o **Codex (ChatGPT)** como ferramenta de produtividade para implementar funcionalidades, organizar o código, criar testes e investigar falhas. Antes da implementação, defini a arquitetura, as tecnologias e as responsabilidades de cada componente. Mantive a API que conversa com o LLM e o servidor MCP em serviços Go separados para deixar clara a divisão entre interpretação do pedido, consulta ao catálogo e persistência. A escolha de Go também veio do contato com a linguagem durante a entrevista.
+
+As principais tecnologias são **Go e Google ADK** para o agente, **MCP** para as ferramentas `buscar_produtos`, `detalhar_produto` e `criar_requisicao`, **DummyJSON** como catálogo de demonstração, **PostgreSQL** para propostas e requisições, **React** na interface e **Docker Compose** para executar os serviços. Na persistência, usei `pgxpool`: cada serviço Go mantém seu próprio pool de conexões e o reutiliza nas operações com o PostgreSQL. O LLM interpreta o pedido e escolhe ferramentas; o backend valida produtos e quantidades, calcula valores e controla a gravação após a confirmação do usuário.
+
+Trabalhei com o Codex em ciclos de implementação de até aproximadamente 1.000 linhas antes de uma revisão humana. Ao fim de cada ciclo, analisava o resultado, testava cenários reais e enviava instruções para corrigir problemas ou fazer ajustes específicos. Mantive sob minha responsabilidade as decisões técnicas e a evolução do projeto.
+
+### Escolha do modelo
+
+Planejei inicialmente usar Gemini por meio do OpenRouter, mas tive problemas com a chave de API disponível. Testei modelos gratuitos, incluindo Gemma, e encontrei limites de requisições e respostas inconsistentes para a integração de _tool calling_ com ADK Go. Para continuar os testes sem custo por chamada, passei a usar **Ollama** localmente. O **Qwen 2.5** ajudou a avançar nas primeiras iterações; a configuração padrão atual usa **`qwen3:4b-instruct`**. O OpenRouter continua configurável para uma etapa futura.
+
+### Testes e melhorias
+
+Usei o Codex para apoiar a criação e execução de testes, inclusive cenários de erro e casos de borda. Também testei conversas manualmente e corrigi situações em que o agente repetia perguntas, perdia o contexto ou sugeria produtos fora dos critérios. Com o fluxo principal funcional, acrescentei:
+
+- **Ferramentas no chat:** a interface mostra as chamadas MCP do agente e as verificações feitas pelo backend.
+- **Avaliação com cinco pedidos:** script e painel exibem os resultados por caso e o número de acertos.
+- **CI:** verificações automáticas de formatação, `go vet`, testes Go e build do frontend.
+- **`criar_requisicao`:** terceira ferramenta MCP, disponível ao agente após confirmação explícita; o servidor valida os dados, calcula o total e grava a requisição no PostgreSQL.
+
+Com mais tempo, priorizaria melhorias visuais, mais cenários de teste e uma avaliação mais abrangente das respostas para aumentar a consistência do agente.
+
 ## Início rápido: modelo local, sem chave de API
 
 Este é o caminho recomendado para avaliar o projeto. Docker executa frontend, API Go, servidor MCP e PostgreSQL; [Ollama](https://ollama.com/download) executa o modelo no computador. A API cria as tabelas automaticamente ao iniciar. A busca de produtos usa a DummyJSON pela internet, então é necessário acesso à rede durante o teste.

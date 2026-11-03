@@ -35,7 +35,7 @@ services:
         condition: service_started
     environment:
       MODEL_PROVIDER: ollama
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b-instruct}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b-instruct}
       OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
       DATABASE_URL: ${DATABASE_URL:?Defina DATABASE_URL no .env}
       MCP_URL: http://mcp:8081/mcp

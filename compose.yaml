@@ -1,0 +1,72 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-purchases}
+      POSTGRES_USER: ${POSTGRES_USER:-purchases}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mcp:
+    build:
+      context: .
+      dockerfile: docker/mcp.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      MCP_PORT: "8081"
+      CATALOG_TIMEOUT: ${CATALOG_TIMEOUT:-15s}
+      DATABASE_URL: ${DATABASE_URL:?Defina DATABASE_URL no .env}
+      MCP_WRITE_SECRET: ${MCP_WRITE_SECRET:?Defina MCP_WRITE_SECRET no .env}
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8081}:8081"
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      mcp:
+        condition: service_started
+    environment:
+      MODEL_PROVIDER: ollama
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b-instruct}
+      OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
+      DATABASE_URL: ${DATABASE_URL:?Defina DATABASE_URL no .env}
+      MCP_WRITE_SECRET: ${MCP_WRITE_SECRET:?Defina MCP_WRITE_SECRET no .env}
+      MCP_URL: http://mcp:8081/mcp
+      API_PORT: "8080"
+      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-180s}
+      CATALOG_TIMEOUT: ${CATALOG_TIMEOUT:-15s}
+      MAX_MODEL_CALLS: ${MAX_MODEL_CALLS:-8}
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:80"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

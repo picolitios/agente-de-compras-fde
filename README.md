@@ -36,7 +36,7 @@ O tempo máximo de processamento de um pedido é configurado por `REQUEST_TIMEOU
 
 Quando o chat sugere aumentar um limite unitário ou exibe uma proposta ainda não confirmada, uma resposta curta na mesma conversa, como `pode ser 25000,00 então`, `aumente para 30000,00` ou `aumento pra 60000,00`, conserva o produto e a quantidade anteriores mesmo após vários ajustes e cria uma nova proposta com opções revalidadas. Após uma sugestão de preço sem proposta, `sim, pode aumentar` usa o menor preço informado; após uma proposta, informe o novo valor. Esse contexto temporário expira em 15 minutos, é mantido apenas na memória da API e não transfere critérios para outra conversa ou para um pedido novo.
 
-Pedidos singulares simples como `carro 100 dólares` significam uma unidade e são comparados com os preços reais do catálogo. Quando uma consulta plural como `carros até 100 dólares` ainda precisa de quantidade, uma resposta curta na mesma conversa, como `1`, `quero um carro só` ou `um carro, pode ser 25000`, completa o pedido sem repetir a pergunta. Uma resposta que reafirma a mesma quantidade junto com o novo teto, como `aumente pra 25000,00, preciso de um carro só`, também mantém o escopo anterior. Mudanças de produto, quantidade ou outros critérios são interpretadas como um novo pedido.
+Pedidos singulares simples como `carro 100 dólares` ou `um carro de 100 dólares` significam uma unidade e são comparados com os preços reais do catálogo. Quando uma consulta plural como `carros até 100 dólares` ainda precisa de quantidade, uma resposta curta na mesma conversa, como `1`, `quero um carro só` ou `um carro, pode ser 25000`, completa o pedido sem repetir a pergunta. Uma resposta que reafirma a mesma quantidade junto com o novo teto, como `aumente pra 25000,00, preciso de um carro só`, também mantém o escopo anterior. Mudanças de produto, quantidade ou outros critérios são interpretadas como um novo pedido.
 
 Na avaliação local, `qwen3:4b-instruct` respondeu corretamente aos diálogos de preço e quantidade, troca de categoria, pedidos de laptops e celulares, marca obrigatória, moeda diferente e produto ausente. O backend ainda valida cada resultado: a avaliação melhora a demonstração, mas não equivale a treinar os pesos do modelo nem garante que toda resposta futura será correta.
 
@@ -57,7 +57,7 @@ Erros da API usam `{"erro":{"codigo":"...","mensagem":"..."}}`. Propostas expira
 ## Desenvolvimento e validação
 
 - Backend: Go 1.26.6. Execute `go test ./...` e `go vet ./...`. O teste de integração PostgreSQL usa `TEST_DATABASE_URL`; sem ela, esse teste é ignorado.
-- Conversas com o modelo local: após subir o Compose, execute `pwsh -NoProfile -File scripts/eval_conversations.ps1` para conferir os nove cenários sem registrar compras. Use `-Repeat 2` para procurar falhas intermitentes; o script retorna erro quando um cenário falha.
+- Conversas com o modelo local: após subir o Compose, execute `pwsh -NoProfile -File scripts/eval_conversations.ps1` para conferir os nove cenários sem registrar compras. Use `-Scenario preco_e_quantidade` para reproduzir apenas a conversa de carro e preço ou `-Repeat 2` para procurar falhas intermitentes; o script retorna erro quando um cenário falha.
 - Frontend: Node 24. Em `frontend/`, execute `npm ci`, `npm run dev`, `npm run build` e `npm run format:check`. O Vite encaminha `/api` para `http://localhost:8080` no desenvolvimento local.
 - Docker: `docker compose config -q` valida a configuração local sem imprimir os valores interpolados. `docker compose build` valida as três imagens próprias.
 

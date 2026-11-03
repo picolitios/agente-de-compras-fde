@@ -1,6 +1,7 @@
 param(
     [string]$ApiBaseUrl = 'http://127.0.0.1:8080',
-    [ValidateRange(1, 20)][int]$Repeat = 1
+    [ValidateRange(1, 20)][int]$Repeat = 1,
+    [Alias('Scenario')][string]$ScenarioName = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,11 +9,11 @@ $ErrorActionPreference = 'Stop'
 # Os cenários exercitam pedidos novos, esclarecimentos e mudanças de escopo sem confirmar compras.
 $scenarios = @(
     @{ Name = 'preco_e_quantidade'; Turns = @(
-        @{ Message = 'carro 100 dolares'; Type = 'no_match' },
+        @{ Message = 'um carro de 100 dolares'; Type = 'no_match'; ExpectedText = 'Há carros no catálogo' },
         @{ Message = 'aumente pra 25000,00, preciso de um carro só'; Type = 'proposal'; Category = 'vehicle'; Quantity = 1; MaxUnitCents = 2500000 }
     ) },
     @{ Name = 'quantidade_em_outra_mensagem'; Turns = @(
-        @{ Message = 'carros até 100 dólares'; Type = 'clarify' },
+        @{ Message = 'carros até 100 dólares'; Type = 'clarify'; ExpectedText = 'Quantos carros' },
         @{ Message = 'quero um carro só'; Type = 'no_match' },
         @{ Message = 'pode ser 25000,00'; Type = 'proposal'; Category = 'vehicle'; Quantity = 1; MaxUnitCents = 2500000 }
     ) },
@@ -40,9 +41,14 @@ $scenarios = @(
         @{ Message = 'carros elétricos até 30000 dólares'; Type = 'clarify' }
     ) },
     @{ Name = 'produto_ausente'; Turns = @(
-        @{ Message = '1 banana até 1 dólar'; Type = 'no_match' }
+        @{ Message = '1 banana até 1 dólar'; Type = 'no_match'; ExpectedText = 'não está disponível' }
     ) }
 )
+
+if ($ScenarioName -ne '') {
+    $scenarios = @($scenarios | Where-Object { $_.Name -eq $ScenarioName })
+    if ($scenarios.Count -eq 0) { throw "Cenário desconhecido: $ScenarioName" }
+}
 
 # Cada cenário recebe um ID de conversa novo; falhas HTTP ficam visíveis sem repetir a mensagem.
 $failures = 0
@@ -63,6 +69,8 @@ for ($run = 1; $run -le $Repeat; $run++) {
             }
             $optionCount = if ($null -ne $response.produtos) { @($response.produtos).Count } else { 0 }
             $sameConversation = $conversationId -eq '' -or $conversationId -eq $response.conversa_id
+            $wrongText = $turn.ExpectedText -and
+                $response.mensagem.IndexOf($turn.ExpectedText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0
             $wrongRequirements = $false
             if ($turn.Type -eq 'proposal') {
                 $requirements = $response.proposta.requirements
@@ -73,7 +81,7 @@ for ($run = 1; $run -le $Repeat; $run++) {
                     if ($product.category -ne $turn.Category) { $wrongRequirements = $true }
                 }
             }
-            if ($response.tipo -ne $turn.Type -or !$sameConversation -or
+            if ($response.tipo -ne $turn.Type -or !$sameConversation -or $wrongText -or
                 ($turn.Type -eq 'proposal' -and $optionCount -lt 1) -or $wrongRequirements) {
                 Write-Output "FAIL run=$run case=$($scenario.Name) expected=$($turn.Type) actual=$($response.tipo) options=$optionCount"
                 $failures++

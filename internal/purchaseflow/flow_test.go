@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/picolitios/agente-de-compras-fde/internal/approval"
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseagent"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
@@ -68,6 +69,48 @@ type stubStore struct {
 	confirms int
 }
 
+var testApprovalSecret = []byte("test-confirmation-secret-with-32-bytes")
+
+type stubRecorder struct{ store *stubStore }
+
+// Record simula somente a chamada MCP feita pelo agente após a aprovação.
+func (r stubRecorder) Record(ctx context.Context, id string, selections []purchases.Selection, grant string) ([]string, error) {
+	if err := approval.Verify(testApprovalSecret, grant, id, selections, time.Now()); err != nil {
+		return nil, err
+	}
+	proposal, err := r.store.GetProposal(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	options := proposal.Options
+	if len(options) == 0 {
+		options = proposal.Items
+	}
+	var items []purchases.Item
+	for _, selection := range selections {
+		for _, option := range options {
+			if option.ProductID == selection.ProductID {
+				option.Quantity = selection.Quantity
+				option.SubtotalCents = option.UnitPriceCents * int64(selection.Quantity)
+				items = append(items, option)
+			}
+		}
+	}
+	_, err = r.store.Confirm(ctx, id, items)
+	return []string{"criar_requisicao"}, err
+}
+
+type silentRecorder struct{}
+
+func (silentRecorder) Record(context.Context, string, []purchases.Selection, string) ([]string, error) {
+	return nil, nil
+}
+
+// newTestFlow mantém os testes do fluxo independentes do modelo e do MCP real.
+func newTestFlow(decider Decider, details Details, store *stubStore) (*Flow, error) {
+	return New(decider, details, store, stubRecorder{store}, testApprovalSecret)
+}
+
 func (s *stubStore) SaveProposal(_ context.Context, proposal purchases.Proposal) error {
 	s.proposal = proposal
 	return nil
@@ -88,6 +131,7 @@ func (s *stubStore) Confirm(_ context.Context, id string, items []purchases.Item
 		return purchases.Purchase{}, err
 	}
 	s.purchase = purchases.Purchase{ID: 1, RequestNumber: "REQ-000001", TotalCents: total, Items: items}
+	s.proposal.PurchaseID = &s.purchase.ID
 	return s.purchase, nil
 }
 func (s *stubStore) GetPurchase(context.Context, int64) (purchases.Purchase, error) {
@@ -105,7 +149,7 @@ func TestProposalAndConfirmation(t *testing.T) {
 	details := &stubDetails{product: catalog.Product{ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99"}}
 	decision := validDecision()
 	decision.ToolCalls = []string{"buscar_produtos", "detalhar_produto"}
-	flow, err := New(stubDecider{decision}, details, store)
+	flow, err := newTestFlow(stubDecider{decision}, details, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +159,7 @@ func TestProposalAndConfirmation(t *testing.T) {
 		t.Fatalf("proposta inesperada: %+v, %v", response, err)
 	}
 	confirmed, err := flow.Confirm(context.Background(), response.Proposal.ID, nil)
-	if err != nil || confirmed.RequestNumber == "" || store.confirms != 1 {
+	if err != nil || confirmed.RequestNumber == "" || store.confirms != 1 || len(confirmed.ToolCalls) != 1 || confirmed.ToolCalls[0] != "criar_requisicao" {
 		t.Fatalf("confirmação inesperada: %+v, %v", confirmed, err)
 	}
 	store.proposal.PurchaseID = &confirmed.ID
@@ -124,11 +168,28 @@ func TestProposalAndConfirmation(t *testing.T) {
 	}
 }
 
+// TestConfirmationWithoutTool não registra quando o modelo não chama a ferramenta MCP.
+func TestConfirmationWithoutTool(t *testing.T) {
+	store := &stubStore{}
+	details := &stubDetails{product: catalog.Product{ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99"}}
+	flow, err := New(stubDecider{validDecision()}, details, store, silentRecorder{}, testApprovalSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := flow.Start(context.Background(), "", "Preciso de 3 laptops até US$ 2000 cada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := flow.Confirm(context.Background(), response.Proposal.ID, nil); !errors.Is(err, ErrRegistration) || store.confirms != 0 {
+		t.Fatalf("registro sem chamada MCP aceito: %v, confirmações=%d", err, store.confirms)
+	}
+}
+
 // TestChangedPrice não permite gravar um preço diferente do apresentado.
 func TestChangedPrice(t *testing.T) {
 	store := &stubStore{}
 	details := &stubDetails{product: catalog.Product{ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99"}}
-	flow, _ := New(stubDecider{validDecision()}, details, store)
+	flow, _ := newTestFlow(stubDecider{validDecision()}, details, store)
 	response, err := flow.Start(context.Background(), "", "3 laptops")
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +205,7 @@ func TestTotalBudget(t *testing.T) {
 	decision := validDecision()
 	decision.MaxTotalPrice = "5999.96"
 	store := &stubStore{}
-	flow, _ := New(stubDecider{decision}, &stubDetails{product: catalog.Product{
+	flow, _ := newTestFlow(stubDecider{decision}, &stubDetails{product: catalog.Product{
 		ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99",
 	}}, store)
 	response, err := flow.Start(context.Background(), "", "3 laptops até US$ 5999.96 no total")
@@ -165,7 +226,7 @@ func TestNoProposalForUnsupportedRequirements(t *testing.T) {
 		decision := validDecision()
 		tt.change(&decision)
 		store := &stubStore{}
-		flow, _ := New(stubDecider{decision}, &stubDetails{}, store)
+		flow, _ := newTestFlow(stubDecider{decision}, &stubDetails{}, store)
 		response, err := flow.Start(context.Background(), "", tt.message)
 		if err != nil || response.Type != "clarify" || store.proposal.ID != "" {
 			t.Fatalf("proposta indevida: %+v, %v", response, err)
@@ -177,7 +238,7 @@ func TestNoProposalForUnsupportedRequirements(t *testing.T) {
 func TestExpiredProposal(t *testing.T) {
 	id, _ := purchases.NewID()
 	store := &stubStore{proposal: purchases.Proposal{ID: id, ExpiresAt: time.Now().Add(-time.Minute)}}
-	flow, _ := New(stubDecider{}, &stubDetails{}, store)
+	flow, _ := newTestFlow(stubDecider{}, &stubDetails{}, store)
 	if _, err := flow.Confirm(context.Background(), id, nil); !errors.Is(err, purchases.ErrExpired) {
 		t.Fatalf("proposta expirada aceita: %v", err)
 	}
@@ -193,7 +254,7 @@ func TestMixedSelection(t *testing.T) {
 		78: {ID: 78, Title: "Laptop A", Category: "laptops", Price: "1999.99"},
 		79: {ID: 79, Title: "Laptop B", Category: "laptops", Price: "1499.99"},
 	}}
-	flow, _ := New(stubDecider{decision}, details, store)
+	flow, _ := newTestFlow(stubDecider{decision}, details, store)
 	response, err := flow.Start(context.Background(), "", "2 laptops")
 	if err != nil || response.Type != "proposal" || len(response.Proposal.Options) != 2 {
 		t.Fatalf("opções inesperadas: %+v, %v", response, err)
@@ -225,7 +286,7 @@ func TestNoMatchMessage(t *testing.T) {
 		{purchaseagent.Decision{Status: "no_match", Message: "Resposta arbitrária do modelo"}, "Produto sem correspondência", noMatchMessage},
 		{purchaseagent.Decision{Status: "select", Message: "Item encontrado", Category: "laptops", Quantity: 2, MaxUnitPrice: "1", SelectedProductID: 78}, "2 laptops até US$ 1 cada", "aumentar o limite"},
 	} {
-		flow, _ := New(stubDecider{test.decision}, &stubDetails{product: catalog.Product{
+		flow, _ := newTestFlow(stubDecider{test.decision}, &stubDetails{product: catalog.Product{
 			ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99",
 		}}, &stubStore{})
 		response, err := flow.Start(context.Background(), "", test.message)
@@ -248,7 +309,7 @@ func TestCandidateOnlyDecision(t *testing.T) {
 				79: {ID: 79, Title: "Telefone", Category: "smartphones", Price: "800.00"},
 			}}
 			store := &stubStore{}
-			flow, _ := New(stubDecider{decision}, details, store)
+			flow, _ := newTestFlow(stubDecider{decision}, details, store)
 			response, err := flow.Start(context.Background(), "", "3 laptops")
 			if err != nil || response.Type != "proposal" || len(response.Products) != 1 || response.SelectedProductID != 78 {
 				t.Fatalf("alternativas locais inválidas: %+v, %v", response, err)
@@ -274,7 +335,7 @@ func TestCatalogCompletesSmartphoneOptions(t *testing.T) {
 	for _, product := range products {
 		details.products[product.ID] = product
 	}
-	flow, _ := New(stubDecider{decision}, details, &stubStore{})
+	flow, _ := newTestFlow(stubDecider{decision}, details, &stubStore{})
 	response, err := flow.Start(context.Background(), "", "4 smartphones até US$ 1000 cada")
 	if err != nil || response.Type != "proposal" || len(response.Products) != 5 {
 		t.Fatalf("lista de smartphones incompleta: %+v, %v", response, err)
@@ -292,7 +353,7 @@ func TestCatalogOverridesFalseNoMatch(t *testing.T) {
 		MaxUnitPrice: "300", SelectedProductID: 0}
 	product := catalog.Product{ID: 121, Title: "iPhone 5s", Category: "smartphones", Price: "199.99"}
 	details := &stubDetails{product: product, searchProducts: []catalog.Product{product}}
-	flow, _ := New(stubDecider{decision}, details, &stubStore{})
+	flow, _ := newTestFlow(stubDecider{decision}, details, &stubStore{})
 	response, err := flow.Start(context.Background(), "", "2 smartphones até US$ 300 cada")
 	if err != nil || response.Type != "proposal" || len(response.Products) != 1 {
 		t.Fatalf("resultado real ignorado: %+v, %v", response, err)
@@ -313,14 +374,14 @@ func TestCatalogRecoversExplicitRequest(t *testing.T) {
 		details.products[product.ID] = product
 	}
 	store := &stubStore{}
-	flow, _ := New(stubDecider{decision}, details, store)
+	flow, _ := newTestFlow(stubDecider{decision}, details, store)
 	response, err := flow.Start(context.Background(), "", "4 smartphones de até 200 dólares cada")
 	if err != nil || response.Type != "proposal" || len(response.Products) != 2 ||
 		response.Products[0].ID != 121 || response.Products[1].ID != 128 || response.Proposal.Requirements.Quantity != 4 {
 		t.Fatalf("pedido explícito não recuperado: %+v, %v", response, err)
 	}
 	store = &stubStore{}
-	flow, _ = New(stubDecider{decision}, details, store)
+	flow, _ = newTestFlow(stubDecider{decision}, details, store)
 	response, err = flow.Start(context.Background(), "", "4 smartphones e 2 laptops")
 	if err != nil || response.Type != "no_match" || store.proposal.ID != "" {
 		t.Fatalf("pedido misto interpretado indevidamente: %+v, %v", response, err)
@@ -339,7 +400,7 @@ func TestNoMatchPriceExplainsAvailableVehicles(t *testing.T) {
 			if status == "clarify" {
 				decision.MaxUnitPrice = ""
 			}
-			flow, _ := New(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{
+			flow, _ := newTestFlow(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{
 				"category:vehicle": vehicles,
 			}}, &stubStore{})
 			response, err := flow.Start(context.Background(), "", "5 carros até 100 dólares")
@@ -361,7 +422,7 @@ func TestSingularCarRequest(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			decision := purchaseagent.Decision{Status: status, Message: "Não há carros no catálogo",
 				Category: "groceries", Quantity: 5, Unverifiable: []string{"carro"}}
-			flow, _ := New(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{
+			flow, _ := newTestFlow(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{
 				"category:vehicle": vehicles,
 			}}, &stubStore{})
 			response, err := flow.Start(context.Background(), "", "carro até 100 dolares")
@@ -386,7 +447,7 @@ func TestSingularCarProposal(t *testing.T) {
 		details.products[product.ID] = product
 	}
 	decision := purchaseagent.Decision{Status: "clarify", Message: "Não há carros", Category: "carro"}
-	flow, _ := New(stubDecider{decision}, details, &stubStore{})
+	flow, _ := newTestFlow(stubDecider{decision}, details, &stubStore{})
 	response, err := flow.Start(context.Background(), "", "quero um carro até 30000 dolares")
 	if err != nil || response.Type != "proposal" || len(response.Products) != 2 ||
 		response.Proposal.Requirements.Quantity != 1 || response.Proposal.Requirements.MaxUnitCents == nil ||
@@ -402,7 +463,7 @@ func TestBareCarPriceContinuation(t *testing.T) {
 		{Status: "clarify", Message: "Quantos carros?", Category: "groceries", Quantity: 5},
 		{Status: "clarify", Message: "Quantos carros?", Category: "groceries", Quantity: 5},
 	}}
-	flow, _ := New(decider, &stubDetails{products: map[int]catalog.Product{169: vehicle},
+	flow, _ := newTestFlow(decider, &stubDetails{products: map[int]catalog.Product{169: vehicle},
 		searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}}}, &stubStore{})
 	first, err := flow.Start(context.Background(), "", "um carro de 100 dolares")
 	if err != nil || first.Type != "no_match" || !strings.Contains(first.Message, "US$ 100,00") ||
@@ -427,7 +488,7 @@ func TestCarClarificationContinuation(t *testing.T) {
 				{Status: "clarify", Message: "Quantos carros?"},
 				{Status: "clarify", Message: "Quantos carros?"},
 			}}
-			flow, _ := New(decider, &stubDetails{products: map[int]catalog.Product{169: vehicle},
+			flow, _ := newTestFlow(decider, &stubDetails{products: map[int]catalog.Product{169: vehicle},
 				searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}}}, &stubStore{})
 			first, err := flow.Start(context.Background(), "", "carros até 100 dólares")
 			if err != nil || first.Type != "clarify" {
@@ -455,7 +516,7 @@ func TestCarClarificationWithBudget(t *testing.T) {
 				{Status: "clarify", Message: "Quantos carros?"},
 				{Status: "clarify", Message: "Quantos carros?"},
 			}}
-			flow, _ := New(decider, &stubDetails{products: map[int]catalog.Product{169: vehicle},
+			flow, _ := newTestFlow(decider, &stubDetails{products: map[int]catalog.Product{169: vehicle},
 				searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}}}, &stubStore{})
 			first, err := flow.Start(context.Background(), "", "carros até 100 dólares")
 			if err != nil || first.Type != "clarify" {
@@ -477,7 +538,7 @@ func TestCarClarificationDoesNotLeak(t *testing.T) {
 		{Status: "clarify", Message: "Quantos carros?"},
 		{Status: "clarify", Message: "Quantos celulares?", Category: "smartphones"},
 	}}
-	flow, _ := New(decider, &stubDetails{searchByTerm: map[string][]catalog.Product{
+	flow, _ := newTestFlow(decider, &stubDetails{searchByTerm: map[string][]catalog.Product{
 		"category:vehicle": {vehicle}}}, &stubStore{})
 	first, err := flow.Start(context.Background(), "", "carros até 100 dólares")
 	if err != nil || first.Type != "clarify" {
@@ -498,7 +559,7 @@ func TestSimpleOrderAfterCarInquiry(t *testing.T) {
 		{Status: "clarify", Message: "Quantos carros?"},
 		{Status: "no_match", Message: "Não há opções", Category: "vehicle", Quantity: 1, Unverifiable: []string{"carro"}},
 	}}
-	flow, _ := New(decider, &stubDetails{products: map[int]catalog.Product{121: phone},
+	flow, _ := newTestFlow(decider, &stubDetails{products: map[int]catalog.Product{121: phone},
 		searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}, "smartphone": {phone}}}, &stubStore{})
 	first, err := flow.Start(context.Background(), "", "carros até 100 dólares")
 	if err != nil || first.Type != "clarify" {
@@ -558,7 +619,7 @@ func TestQualifiedCarInquiryKeepsCriteria(t *testing.T) {
 		{Status: "clarify", Message: "Não consigo verificar se os carros são elétricos", Category: "vehicle", Unverifiable: []string{"elétrico"}},
 		{Status: "clarify", Message: "Preciso confirmar o requisito elétrico", Category: "vehicle", Unverifiable: []string{"elétrico"}},
 	}}
-	flow, _ := New(decider, &stubDetails{}, &stubStore{})
+	flow, _ := newTestFlow(decider, &stubDetails{}, &stubStore{})
 	first, err := flow.Start(context.Background(), "", "carros elétricos até 30000 dólares")
 	if err != nil || first.Type != "clarify" || first.Message != "Não consigo verificar se os carros são elétricos" {
 		t.Fatalf("requisito elétrico ignorado: %+v, %v", first, err)
@@ -573,7 +634,7 @@ func TestQualifiedCarInquiryKeepsCriteria(t *testing.T) {
 func TestUnverifiableSelectionClarifies(t *testing.T) {
 	decision := purchaseagent.Decision{Status: "select", Message: "Não há carros elétricos",
 		Unverifiable: []string{"carros elétricos"}}
-	flow, _ := New(stubDecider{decision}, &stubDetails{}, &stubStore{})
+	flow, _ := newTestFlow(stubDecider{decision}, &stubDetails{}, &stubStore{})
 	response, err := flow.Start(context.Background(), "", "carros elétricos até 30000 dólares")
 	if err != nil || response.Type != "clarify" || response.Proposal != nil {
 		t.Fatalf("seleção contraditória não pediu esclarecimento: %+v, %v", response, err)
@@ -586,7 +647,7 @@ func TestPluralCarInquiry(t *testing.T) {
 	for _, status := range []string{"clarify", "no_match", "select"} {
 		t.Run(status, func(t *testing.T) {
 			decision := purchaseagent.Decision{Status: status, Message: "Não há carros", Category: "carros", Quantity: 5, ToolCalls: []string{"buscar_produtos"}}
-			flow, _ := New(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{
+			flow, _ := newTestFlow(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{
 				"category:vehicle": {vehicle},
 			}}, &stubStore{})
 			response, err := flow.Start(context.Background(), "", "carros até 100 dolares")
@@ -603,7 +664,7 @@ func TestPluralCarInquiry(t *testing.T) {
 
 // TestPluralCarInquiryCatalogError não confunde falha de consulta com falta de carros.
 func TestPluralCarInquiryCatalogError(t *testing.T) {
-	flow, _ := New(stubDecider{purchaseagent.Decision{Status: "clarify"}},
+	flow, _ := newTestFlow(stubDecider{purchaseagent.Decision{Status: "clarify"}},
 		&stubDetails{searchErr: errors.New("offline")}, &stubStore{})
 	if _, err := flow.Start(context.Background(), "", "carros até 100 dolares"); !errors.Is(err, ErrCatalog) {
 		t.Fatalf("falha do catálogo não propagada: %v", err)
@@ -613,7 +674,7 @@ func TestPluralCarInquiryCatalogError(t *testing.T) {
 // TestCarInquiryOtherCurrency não compara reais com os preços em USD do catálogo.
 func TestCarInquiryOtherCurrency(t *testing.T) {
 	vehicle := catalog.Product{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"}
-	flow, _ := New(stubDecider{purchaseagent.Decision{Status: "clarify", Message: "Não há carros"}},
+	flow, _ := newTestFlow(stubDecider{purchaseagent.Decision{Status: "clarify", Message: "Não há carros"}},
 		&stubDetails{searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}}}, &stubStore{})
 	response, err := flow.Start(context.Background(), "", "carros até 100 reais")
 	if err != nil || response.Type != "clarify" || !strings.Contains(response.Message, "Há carros no catálogo") ||
@@ -639,7 +700,7 @@ func TestSingularCarBudgetContinuation(t *testing.T) {
 	for _, product := range vehicles {
 		details.products[product.ID] = product
 	}
-	flow, _ := New(decider, details, &stubStore{})
+	flow, _ := newTestFlow(decider, details, &stubStore{})
 	first, err := flow.Start(context.Background(), "", "carro até 100 dolares")
 	if err != nil || first.Type != "no_match" {
 		t.Fatalf("pedido inicial inesperado: %+v, %v", first, err)
@@ -666,7 +727,7 @@ func TestSingularCarBudgetContinuation(t *testing.T) {
 func TestNoMatchAbsentProduct(t *testing.T) {
 	for _, request := range []string{"5 carros até 100 dólares", "1 banana até 1 dólar"} {
 		t.Run(request, func(t *testing.T) {
-			flow, _ := New(stubDecider{purchaseagent.Decision{Status: "no_match"}}, &stubDetails{searchByTerm: map[string][]catalog.Product{}}, &stubStore{})
+			flow, _ := newTestFlow(stubDecider{purchaseagent.Decision{Status: "no_match"}}, &stubDetails{searchByTerm: map[string][]catalog.Product{}}, &stubStore{})
 			response, err := flow.Start(context.Background(), "", request)
 			if err != nil || response.Type != "no_match" || !strings.Contains(response.Message, "não está disponível") ||
 				!strings.Contains(response.Message, "celulares, laptops e itens de mercado") {
@@ -679,7 +740,7 @@ func TestNoMatchAbsentProduct(t *testing.T) {
 // TestClarifyAbsentBanana corrige a conclusão do modelo quando o item foi informado com clareza.
 func TestClarifyAbsentBanana(t *testing.T) {
 	decision := purchaseagent.Decision{Status: "clarify", Message: "Não há banana", Category: "groceries", Quantity: 1}
-	flow, _ := New(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{}}, &stubStore{})
+	flow, _ := newTestFlow(stubDecider{decision}, &stubDetails{searchByTerm: map[string][]catalog.Product{}}, &stubStore{})
 	response, err := flow.Start(context.Background(), "", "1 banana até 1 dólar")
 	if err != nil || response.Type != "no_match" || !strings.Contains(response.Message, "Não encontrei bananas") {
 		t.Fatalf("diagnóstico de banana inesperado: %+v, %v", response, err)
@@ -688,7 +749,7 @@ func TestClarifyAbsentBanana(t *testing.T) {
 
 // TestNoMatchCatalogError não apresenta uma falha de catálogo como ausência de produto.
 func TestNoMatchCatalogError(t *testing.T) {
-	flow, _ := New(stubDecider{purchaseagent.Decision{Status: "no_match"}}, &stubDetails{searchErr: errors.New("offline")}, &stubStore{})
+	flow, _ := newTestFlow(stubDecider{purchaseagent.Decision{Status: "no_match"}}, &stubDetails{searchErr: errors.New("offline")}, &stubStore{})
 	_, err := flow.Start(context.Background(), "", "1 banana até 1 dólar")
 	if !errors.Is(err, ErrCatalog) {
 		t.Fatalf("falha do catálogo não propagada: %v", err)
@@ -703,7 +764,7 @@ func TestExplicitUnitLimitFiltersVehicleProposal(t *testing.T) {
 	}
 	products := map[int]catalog.Product{100: vehicles[0], 101: vehicles[1]}
 	decision := purchaseagent.Decision{Status: "clarify", Message: "Não há carros", CandidateProductIDs: []int{100, 101}}
-	flow, _ := New(stubDecider{decision}, &stubDetails{products: products, searchByTerm: map[string][]catalog.Product{
+	flow, _ := newTestFlow(stubDecider{decision}, &stubDetails{products: products, searchByTerm: map[string][]catalog.Product{
 		"category:vehicle": vehicles,
 	}}, &stubStore{})
 	response, err := flow.Start(context.Background(), "", "1 carro até 25000 dólares")
@@ -728,7 +789,7 @@ func TestNoMatchTotalBudget(t *testing.T) {
 	product := catalog.Product{ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99"}
 	decision := purchaseagent.Decision{Status: "select", Category: "laptops", Quantity: 3,
 		MaxTotalPrice: "5000", SelectedProductID: 78}
-	flow, _ := New(stubDecider{decision}, &stubDetails{product: product}, &stubStore{})
+	flow, _ := newTestFlow(stubDecider{decision}, &stubDetails{product: product}, &stubStore{})
 	response, err := flow.Start(context.Background(), "", "3 laptops até US$ 5000 no total")
 	if err != nil || response.Type != "no_match" || !strings.Contains(response.Message, "US$ 5999,97") ||
 		!strings.Contains(response.Message, "orçamento total de US$ 5000,00") {
@@ -748,7 +809,7 @@ func TestBudgetContinuation(t *testing.T) {
 	}}
 	details := &stubDetails{products: map[int]catalog.Product{169: vehicles[0], 170: vehicles[1]},
 		searchByTerm: map[string][]catalog.Product{"category:vehicle": vehicles}}
-	flow, _ := New(decider, details, &stubStore{})
+	flow, _ := newTestFlow(decider, details, &stubStore{})
 	first, err := flow.Start(context.Background(), "", "1 carro até 100 dólares")
 	if err != nil || first.Type != "no_match" {
 		t.Fatalf("primeira resposta inesperada: %+v, %v", first, err)
@@ -766,7 +827,7 @@ func TestBudgetContinuation(t *testing.T) {
 func TestBudgetAcceptance(t *testing.T) {
 	product := catalog.Product{ID: 169, Title: "Dodge Hornet", Category: "vehicle", Price: "24999.99"}
 	decider := &sequenceDecider{decisions: []purchaseagent.Decision{{Status: "no_match"}, {Status: "no_match"}}}
-	flow, _ := New(decider, &stubDetails{product: product,
+	flow, _ := newTestFlow(decider, &stubDetails{product: product,
 		searchByTerm: map[string][]catalog.Product{"category:vehicle": {product}}}, &stubStore{})
 	first, err := flow.Start(context.Background(), "", "1 carro até 100 dólares")
 	if err != nil || first.Type != "no_match" {
@@ -797,7 +858,7 @@ func TestBudgetContinuationAfterProposal(t *testing.T) {
 		details.products[product.ID] = product
 	}
 	store := &stubStore{}
-	flow, _ := New(decider, details, store)
+	flow, _ := newTestFlow(decider, details, store)
 	first, err := flow.Start(context.Background(), "", "1 carro até 25000 dólares")
 	if err != nil || first.Type != "proposal" || len(first.Products) != 1 {
 		t.Fatalf("primeira proposta inesperada: %+v, %v", first, err)
@@ -824,7 +885,7 @@ func TestBudgetContinuationIsScoped(t *testing.T) {
 	product := catalog.Product{ID: 169, Title: "Dodge Hornet", Category: "vehicle", Price: "24999.99"}
 	decider := &sequenceDecider{decisions: []purchaseagent.Decision{{Status: "no_match"},
 		{Status: "clarify", Message: "Qual produto?"}, {Status: "clarify", Message: "Qual produto?"}}}
-	flow, _ := New(decider, &stubDetails{searchByTerm: map[string][]catalog.Product{"category:vehicle": {product}}}, &stubStore{})
+	flow, _ := newTestFlow(decider, &stubDetails{searchByTerm: map[string][]catalog.Product{"category:vehicle": {product}}}, &stubStore{})
 	first, err := flow.Start(context.Background(), "", "1 carro até 100 dólares")
 	if err != nil || first.Type != "no_match" {
 		t.Fatalf("primeira resposta inesperada: %+v, %v", first, err)
@@ -844,7 +905,7 @@ func TestBudgetContinuationExpires(t *testing.T) {
 	product := catalog.Product{ID: 169, Title: "Dodge Hornet", Category: "vehicle", Price: "24999.99"}
 	decider := &sequenceDecider{decisions: []purchaseagent.Decision{{Status: "no_match"},
 		{Status: "clarify", Message: "Informe o pedido"}}}
-	flow, _ := New(decider, &stubDetails{searchByTerm: map[string][]catalog.Product{
+	flow, _ := newTestFlow(decider, &stubDetails{searchByTerm: map[string][]catalog.Product{
 		"category:vehicle": {product},
 	}}, &stubStore{})
 	first, err := flow.Start(context.Background(), "", "1 carro até 100 dólares")

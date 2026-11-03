@@ -67,6 +67,7 @@ type Purchase struct {
 	TotalCents      int64     `json:"total_cents"`
 	CreatedAt       time.Time `json:"created_at"`
 	Items           []Item    `json:"items"`
+	ToolCalls       []string  `json:"ferramentas,omitempty"`
 }
 
 // NewID cria um identificador opaco sem depender de uma sequência pública.

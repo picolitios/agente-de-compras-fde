@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
 	"github.com/picolitios/agente-de-compras-fde/internal/mcptools"
+	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
 )
 
 // main configura o catálogo, inicia o servidor MCP e encerra conexões com segurança.
@@ -35,7 +38,24 @@ func main() {
 		logger.Error("configurar catálogo", "error", err)
 		os.Exit(1)
 	}
-	mcpServer, err := mcptools.NewServer(client)
+	// O processo MCP compartilha o banco, mas a API continua dona das migrations de inicialização.
+	databaseURL, approvalSecret := os.Getenv("DATABASE_URL"), os.Getenv("MCP_WRITE_SECRET")
+	if databaseURL == "" || len(approvalSecret) < 32 {
+		logger.Error("DATABASE_URL ou MCP_WRITE_SECRET inválido")
+		os.Exit(1)
+	}
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer startupCancel()
+	pool, err := pgxpool.New(startupCtx, databaseURL)
+	if err == nil {
+		err = pool.Ping(startupCtx)
+	}
+	if err != nil {
+		logger.Error("PostgreSQL indisponível", "error_type", fmt.Sprintf("%T", err))
+		os.Exit(1)
+	}
+	defer pool.Close()
+	mcpServer, err := mcptools.NewServerWithPurchase(client, purchases.NewRepository(pool), []byte(approvalSecret))
 	if err != nil {
 		logger.Error("configurar MCP", "error", err)
 		os.Exit(1)

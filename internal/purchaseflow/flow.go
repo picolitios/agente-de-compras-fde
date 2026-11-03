@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/picolitios/agente-de-compras-fde/internal/approval"
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseagent"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
@@ -18,6 +19,7 @@ import (
 var (
 	ErrCatalog             = errors.New("catálogo indisponível")
 	ErrAgent               = errors.New("agente indisponível")
+	ErrRegistration        = errors.New("registro não concluído")
 	knownProductPattern    = regexp.MustCompile(`(?i)\b([1-9][0-9]{0,2})\s+(smartphones?|celulares?|laptops?|notebooks?|carros?)\b`)
 	otherCurrencyWords     = regexp.MustCompile(`(?i)\b(reais|euros?|libras?)\b`)
 	singleCarPattern       = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco|um)\s+)*carro(?:\s+(?:de\s+)?at[eé]\s+(?:US\$\s*)?[0-9][0-9.,]*\s*(?:d[oó]lares?|usd)?(?:\s+cada)?)?\s*[.!?]?\s*$`)
@@ -44,8 +46,12 @@ type Details interface {
 type Store interface {
 	SaveProposal(context.Context, purchases.Proposal) error
 	GetProposal(context.Context, string) (purchases.Proposal, error)
-	Confirm(context.Context, string, []purchases.Item) (purchases.Purchase, error)
 	GetPurchase(context.Context, int64) (purchases.Purchase, error)
+}
+
+// Recorder deixa o agente acionar a ferramenta de gravação após a confirmação.
+type Recorder interface {
+	Record(context.Context, string, []purchases.Selection, string) ([]string, error)
 }
 
 // Response é a resposta estruturada do chat, incluindo opções comprovadas pelo backend.
@@ -64,16 +70,19 @@ type Flow struct {
 	decider   Decider
 	details   Details
 	store     Store
+	recorder  Recorder
+	secret    []byte
 	pendingMu sync.Mutex
 	pending   map[string]pendingBudget
 }
 
 // New exige as três dependências necessárias ao fluxo.
-func New(decider Decider, details Details, store Store) (*Flow, error) {
-	if decider == nil || details == nil || store == nil {
+func New(decider Decider, details Details, store Store, recorder Recorder, approvalSecret []byte) (*Flow, error) {
+	if decider == nil || details == nil || store == nil || recorder == nil || len(approvalSecret) < 32 {
 		return nil, errors.New("dependências do fluxo ausentes")
 	}
-	return &Flow{decider: decider, details: details, store: store, pending: make(map[string]pendingBudget)}, nil
+	return &Flow{decider: decider, details: details, store: store, recorder: recorder,
+		secret: append([]byte(nil), approvalSecret...), pending: make(map[string]pendingBudget)}, nil
 }
 
 // Start executa o agente e cria apenas uma proposta quando todos os critérios são verificáveis.
@@ -404,7 +413,7 @@ func explicitUnitLimit(message string) (string, bool) {
 	return centsDecimal(cents), true
 }
 
-// Confirm consulta o catálogo novamente e deixa o repositório fazer a gravação atômica.
+// Confirm revalida a seleção e autoriza uma chamada de gravação pelo agente.
 func (f *Flow) Confirm(ctx context.Context, id string, selections []purchases.Selection) (purchases.Purchase, error) {
 	if !purchases.ValidID(id) {
 		return purchases.Purchase{}, purchases.ErrInvalid
@@ -478,11 +487,28 @@ func (f *Flow) Confirm(ctx context.Context, id string, selections []purchases.Se
 	if _, err := purchases.ValidateAllocation(proposal.Requirements, options, currentItems); err != nil {
 		return purchases.Purchase{}, err
 	}
-	purchase, err := f.store.Confirm(ctx, id, currentItems)
-	if err == nil {
-		f.clearConfirmedProposal(proposal.ConversationID, proposal.ID)
+	grant, err := approval.Sign(f.secret, id, selections, time.Now().Add(4*time.Minute))
+	if err != nil {
+		return purchases.Purchase{}, err
 	}
-	return purchase, err
+	toolCalls, err := f.recorder.Record(ctx, id, selections, grant)
+	if err != nil {
+		return purchases.Purchase{}, fmt.Errorf("%w: registrar por MCP: %w", ErrAgent, err)
+	}
+	confirmed, err := f.store.GetProposal(ctx, id)
+	if err != nil {
+		return purchases.Purchase{}, fmt.Errorf("%w: consultar proposta após MCP: %w", ErrRegistration, err)
+	}
+	if confirmed.PurchaseID == nil {
+		return purchases.Purchase{}, fmt.Errorf("%w: ferramenta não registrou a requisição", ErrRegistration)
+	}
+	purchase, err := f.store.GetPurchase(ctx, *confirmed.PurchaseID)
+	if err != nil {
+		return purchases.Purchase{}, err
+	}
+	purchase.ToolCalls = toolCalls
+	f.clearConfirmedProposal(proposal.ConversationID, proposal.ID)
+	return purchase, nil
 }
 
 // mentionsOtherCurrency impede comparar preços USD sem conversão definida.

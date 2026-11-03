@@ -207,6 +207,8 @@ func (s *Server) handleError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusGatewayTimeout, "TIMEOUT", "A consulta demorou demais. Tente novamente.")
 	case errors.Is(err, purchaseflow.ErrCatalog):
 		writeError(w, http.StatusServiceUnavailable, "CATALOG_UNAVAILABLE", "Catálogo indisponível. Tente novamente.")
+	case errors.Is(err, purchaseflow.ErrRegistration):
+		writeError(w, http.StatusServiceUnavailable, "REGISTRATION_FAILED", "Não foi possível registrar a requisição. Tente confirmar novamente.")
 	case errors.Is(err, purchaseagent.ErrModelLimit):
 		writeError(w, http.StatusBadGateway, "MODEL_LIMIT", "Não foi possível concluir a análise do pedido.")
 	case errors.Is(err, purchaseagent.ErrInvalidDecision):

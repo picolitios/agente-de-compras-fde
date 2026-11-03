@@ -33,6 +33,7 @@ type config struct {
 	ollamaModel    string
 	ollamaBaseURL  string
 	databaseURL    string
+	approvalSecret string
 	mcpURL         string
 	port           int
 	requestTimeout time.Duration
@@ -45,12 +46,13 @@ func loadConfig() (config, error) {
 	c := config{provider: os.Getenv("MODEL_PROVIDER"), apiKey: os.Getenv("OPENROUTER_API_KEY"),
 		model: os.Getenv("OPENROUTER_MODEL"), fallbackModel: os.Getenv("OPENROUTER_FALLBACK_MODEL"),
 		ollamaModel: os.Getenv("OLLAMA_MODEL"), ollamaBaseURL: os.Getenv("OLLAMA_BASE_URL"),
-		databaseURL: os.Getenv("DATABASE_URL"), mcpURL: os.Getenv("MCP_URL")}
+		databaseURL: os.Getenv("DATABASE_URL"), mcpURL: os.Getenv("MCP_URL"),
+		approvalSecret: os.Getenv("MCP_WRITE_SECRET")}
 	if c.provider == "" {
 		c.provider = "openrouter"
 	}
-	if c.databaseURL == "" || c.mcpURL == "" {
-		return config{}, errors.New("DATABASE_URL e MCP_URL são obrigatórios")
+	if c.databaseURL == "" || c.mcpURL == "" || len(c.approvalSecret) < 32 {
+		return config{}, errors.New("DATABASE_URL, MCP_URL e MCP_WRITE_SECRET com 32 caracteres são obrigatórios")
 	}
 	switch c.provider {
 	case "openrouter":
@@ -160,7 +162,7 @@ func main() {
 		os.Exit(1)
 	}
 	repository := purchases.NewRepository(pool)
-	flow, err := purchaseflow.New(decider, details, repository)
+	flow, err := purchaseflow.New(decider, details, repository, decider, []byte(cfg.approvalSecret))
 	if err != nil {
 		logger.Error("configurar fluxo", "error", err)
 		os.Exit(1)

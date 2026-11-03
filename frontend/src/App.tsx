@@ -215,6 +215,20 @@ export default function App() {
                       onConfirm={confirm}
                     />
                   )}
+                  {message.purchase?.ferramentas &&
+                    message.purchase.ferramentas.length > 0 && (
+                      <div
+                        className="tool-calls"
+                        aria-label="Ferramentas chamadas na confirmação"
+                      >
+                        <span>Na confirmação:</span>
+                        <ol>
+                          {message.purchase.ferramentas.map((tool, index) => (
+                            <li key={`${tool}-${index}`}>{tool}</li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
                 </div>
               </div>
             ))}

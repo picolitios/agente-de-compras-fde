@@ -7,10 +7,111 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/picolitios/agente-de-compras-fde/internal/approval"
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
+	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
 )
+
+type purchaseCatalog struct{ price string }
+
+func (c *purchaseCatalog) Search(context.Context, string) (catalog.SearchResult, error) {
+	return catalog.SearchResult{}, nil
+}
+func (c *purchaseCatalog) Get(context.Context, int) (catalog.Product, error) {
+	return catalog.Product{ID: 12, Title: "Notebook", Category: "laptops", Price: c.price}, nil
+}
+
+type purchaseStore struct {
+	proposal purchases.Proposal
+	purchase purchases.Purchase
+	writes   int
+}
+
+func (s *purchaseStore) GetProposal(context.Context, string) (purchases.Proposal, error) {
+	return s.proposal, nil
+}
+func (s *purchaseStore) GetPurchase(context.Context, int64) (purchases.Purchase, error) {
+	return s.purchase, nil
+}
+func (s *purchaseStore) Confirm(_ context.Context, _ string, items []purchases.Item) (purchases.Purchase, error) {
+	total, err := purchases.ValidateAllocation(s.proposal.Requirements, s.proposal.Options, items)
+	if err != nil {
+		return purchases.Purchase{}, err
+	}
+	s.writes++
+	s.purchase = purchases.Purchase{ID: 104, RequestNumber: "REQ-000104", TotalCents: total, Currency: "USD", Items: items}
+	s.proposal.PurchaseID = &s.purchase.ID
+	return s.purchase, nil
+}
+
+type headerTransport struct {
+	grant string
+}
+
+func (t headerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	copy := request.Clone(request.Context())
+	copy.Header.Set("X-Purchase-Approval", t.grant)
+	return http.DefaultTransport.RoundTrip(copy)
+}
+
+// TestCreateRequestTool verifica autorização, preço atual, total e idempotência pelo MCP real.
+func TestCreateRequestTool(t *testing.T) {
+	ctx := context.Background()
+	secret := []byte("test-confirmation-secret-with-32-bytes")
+	id := "0123456789abcdef0123456789abcdef"
+	item := purchases.Item{ProductID: 12, ProductName: "Notebook", UnitPriceCents: 50000, Quantity: 1, SubtotalCents: 50000}
+	store := &purchaseStore{proposal: purchases.Proposal{ID: id, Requirements: purchases.Requirements{Category: "laptops", Quantity: 2},
+		Options: []purchases.Item{item}, ExpiresAt: time.Now().Add(time.Minute)}}
+	source := &purchaseCatalog{price: "501.00"}
+	server, err := NewServerWithPurchase(source, store, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(NewHTTPHandler(server))
+	defer httpServer.Close()
+	selection := []purchases.Selection{{ProductID: 12, Quantity: 2}}
+	grant, err := approval.Sign(secret, id, selection, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(token string, quantity int) (*mcp.CallToolResult, error) {
+		client := mcp.NewClient(&mcp.Implementation{Name: "write-test", Version: "1.0.0"}, nil)
+		session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: httpServer.URL + "/mcp",
+			HTTPClient: &http.Client{Transport: headerTransport{grant: token}}}, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer session.Close()
+		return session.CallTool(ctx, &mcp.CallToolParams{Name: "criar_requisicao", Arguments: map[string]any{
+			"proposta_id": id, "itens": []map[string]any{{"produto_id": 12, "quantidade": quantity}},
+		}})
+	}
+	if result, err := call("", 2); err == nil && !result.IsError {
+		t.Fatal("gravação sem confirmação aceita")
+	}
+	if result, err := call(grant+"x", 2); err == nil && !result.IsError {
+		t.Fatal("autorização alterada aceita")
+	}
+	if result, err := call(grant, 2); err == nil && !result.IsError {
+		t.Fatal("preço alterado aceito")
+	}
+	source.price = "500.00"
+	// Uma quantidade transcrita incorretamente pelo modelo não altera a seleção assinada.
+	result, err := call(grant, 3)
+	if err != nil || result.IsError || store.writes != 1 || store.purchase.TotalCents != 100000 {
+		t.Fatalf("registro inválido: resultado=%+v erro=%v gravações=%d", result, err, store.writes)
+	}
+	encoded, _ := json.Marshal(result.StructuredContent)
+	if !strings.Contains(string(encoded), `"numero":"REQ-000104"`) || !strings.Contains(string(encoded), `"total_centavos":100000`) {
+		t.Fatalf("confirmação sem número ou total: %s", encoded)
+	}
+	if result, err := call(grant, 2); err != nil || result.IsError || store.writes != 1 {
+		t.Fatal("repetição criou outro registro")
+	}
+}
 
 // TestToolsExecutables percorre o protocolo MCP sem chave de modelo ou rede externa.
 func TestToolsExecutables(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
@@ -67,7 +68,7 @@ func New(model, repairModel model.LLM, mcpURL string, httpClient *http.Client, m
 // Decide deixa o ADK conduzir o ciclo de ferramentas e valida a resposta final.
 func (d *ADKDecider) Decide(ctx context.Context, conversationID, message string) (Decision, error) {
 	transport := &mcp.StreamableClientTransport{Endpoint: d.mcpURL, HTTPClient: d.httpClient}
-	tools, err := mcptoolset.New(mcptoolset.Config{Transport: transport})
+	tools, err := mcptoolset.New(mcptoolset.Config{Transport: transport, ToolFilter: tool.AllowedToolsPredicate([]string{"buscar_produtos", "detalhar_produto"})})
 	if err != nil {
 		return Decision{}, fmt.Errorf("preparar ferramentas MCP: %w", err)
 	}
@@ -127,6 +128,84 @@ func (d *ADKDecider) Decide(ctx context.Context, conversationID, message string)
 	decision, err = d.repairDecision(ctx, message, final)
 	decision.ToolCalls = toolCalls
 	return decision, err
+}
+
+// Record oferece a ferramenta de escrita apenas após a confirmação explícita recebida pela API.
+func (d *ADKDecider) Record(ctx context.Context, proposalID string, items []purchases.Selection, grant string) ([]string, error) {
+	if !purchases.ValidID(proposalID) || len(items) == 0 || grant == "" {
+		return nil, purchases.ErrInvalid
+	}
+	client := *d.httpClient
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = approvalTransport{base: base, grant: grant}
+	transport := &mcp.StreamableClientTransport{Endpoint: d.mcpURL, HTTPClient: &client}
+	tools, err := mcptoolset.New(mcptoolset.Config{Transport: transport, ToolFilter: tool.AllowedToolsPredicate([]string{"criar_requisicao"})})
+	if err != nil {
+		return nil, fmt.Errorf("preparar ferramenta de gravação: %w", err)
+	}
+	defer tools.(io.Closer).Close()
+	modelCalls := 0
+	a, err := llmagent.New(llmagent.Config{
+		Name: "purchase_agent", Model: d.model, Toolsets: []tool.Toolset{tools},
+		InstructionProvider: func(agent.ReadonlyContext) (string, error) {
+			return "Você recebeu uma confirmação explícita do usuário. Se os dados incluem uma proposta e itens escolhidos, chame criar_requisicao uma vez com esses IDs e quantidades. O servidor verifica autorização, catálogo e total. Não invente produtos nem valores. Só informe sucesso após o retorno da ferramenta.", nil
+		},
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{func(agent.Context, *model.LLMRequest) (*model.LLMResponse, error) {
+			modelCalls++
+			if modelCalls > d.maxModelCalls {
+				return nil, ErrModelLimit
+			}
+			return nil, nil
+		}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("criar agente de confirmação: %w", err)
+	}
+	r, err := runner.New(runner.Config{AppName: "purchase-chat", Agent: a,
+		SessionService: d.sessions, AutoCreateSession: true})
+	if err != nil {
+		return nil, fmt.Errorf("criar runner de confirmação: %w", err)
+	}
+	data, err := json.Marshal(struct {
+		ProposalID string                `json:"proposta_id"`
+		Items      []purchases.Selection `json:"itens"`
+	}{proposalID, items})
+	if err != nil {
+		return nil, err
+	}
+	var calls []string
+	for event, err := range r.Run(ctx, "demo", "confirm-"+proposalID, genai.NewContentFromText("Usuário confirmou a seleção: "+string(data), genai.RoleUser), agent.RunConfig{}) {
+		if err != nil {
+			return nil, fmt.Errorf("executar confirmação: %w", err)
+		}
+		if event == nil || event.Content == nil {
+			continue
+		}
+		for _, part := range event.Content.Parts {
+			if part != nil && part.FunctionCall != nil {
+				calls = append(calls, part.FunctionCall.Name)
+			}
+		}
+	}
+	if len(calls) == 0 {
+		return nil, ErrInvalidDecision
+	}
+	return calls, nil
+}
+
+// approvalTransport envia a autorização somente ao MCP, fora do prompt e do JSON da ferramenta.
+type approvalTransport struct {
+	base  http.RoundTripper
+	grant string
+}
+
+func (t approvalTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	copy := request.Clone(request.Context())
+	copy.Header.Set("X-Purchase-Approval", t.grant)
+	return t.base.RoundTrip(copy)
 }
 
 // repairDecision solicita uma única correção de formato sem ferramentas nem novos dados de catálogo.

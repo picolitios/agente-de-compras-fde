@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
+	"github.com/picolitios/agente-de-compras-fde/internal/approval"
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
 	"github.com/picolitios/agente-de-compras-fde/internal/mcptools"
+	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
@@ -28,6 +31,83 @@ func (c *fakeCatalog) Get(context.Context, int) (catalog.Product, error) {
 
 type fakeModel struct{ calls int }
 
+type fakeRecorderStore struct {
+	proposal purchases.Proposal
+	purchase purchases.Purchase
+	writes   int
+}
+
+func (s *fakeRecorderStore) GetProposal(context.Context, string) (purchases.Proposal, error) {
+	return s.proposal, nil
+}
+func (s *fakeRecorderStore) GetPurchase(context.Context, int64) (purchases.Purchase, error) {
+	return s.purchase, nil
+}
+func (s *fakeRecorderStore) Confirm(_ context.Context, _ string, items []purchases.Item) (purchases.Purchase, error) {
+	total, err := purchases.ValidateAllocation(s.proposal.Requirements, s.proposal.Options, items)
+	if err != nil {
+		return purchases.Purchase{}, err
+	}
+	s.writes++
+	s.purchase = purchases.Purchase{ID: 104, RequestNumber: "REQ-000104", TotalCents: total, Currency: "USD"}
+	s.proposal.PurchaseID = &s.purchase.ID
+	return s.purchase, nil
+}
+
+type fakeRecordModel struct {
+	calls int
+	id    string
+}
+
+func (*fakeRecordModel) Name() string { return "fake-record-model" }
+
+func (m *fakeRecordModel) GenerateContent(_ context.Context, request *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		m.calls++
+		if _, ok := request.Tools["criar_requisicao"]; !ok || len(request.Tools) != 1 {
+			yield(nil, errors.New("ferramenta de gravação não isolada"))
+			return
+		}
+		if m.calls == 1 {
+			yield(&model.LLMResponse{Content: &genai.Content{Role: genai.RoleModel,
+				Parts: []*genai.Part{genai.NewPartFromFunctionCall("criar_requisicao", map[string]any{
+					"proposta_id": m.id, "itens": []map[string]any{{"produto_id": 78, "quantidade": 3}},
+				})}}}, nil)
+			return
+		}
+		yield(&model.LLMResponse{Content: genai.NewContentFromText("Requisição registrada", genai.RoleModel)}, nil)
+	}
+}
+
+// TestRecordAfterApproval verifica que somente a etapa confirmada expõe a escrita ao modelo.
+func TestRecordAfterApproval(t *testing.T) {
+	secret := []byte("test-confirmation-secret-with-32-bytes")
+	id := "0123456789abcdef0123456789abcdef"
+	item := purchases.Item{ProductID: 78, ProductName: "Laptop", UnitPriceCents: 199999, Quantity: 1, SubtotalCents: 199999}
+	store := &fakeRecorderStore{proposal: purchases.Proposal{ID: id, Requirements: purchases.Requirements{Category: "laptops", Quantity: 2},
+		Options: []purchases.Item{item}, ExpiresAt: time.Now().Add(time.Minute)}}
+	server, err := mcptools.NewServerWithPurchase(&fakeCatalog{}, store, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(mcptools.NewHTTPHandler(server))
+	defer httpServer.Close()
+	model := &fakeRecordModel{id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	decider, err := New(model, nil, httpServer.URL+"/mcp", httpServer.Client(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selections := []purchases.Selection{{ProductID: 78, Quantity: 2}}
+	grant, err := approval.Sign(secret, id, selections, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, err := decider.Record(context.Background(), id, selections, grant)
+	if err != nil || !reflect.DeepEqual(calls, []string{"criar_requisicao"}) || store.writes != 1 || store.purchase.TotalCents != 399998 {
+		t.Fatalf("confirmação inesperada: calls=%v purchase=%+v writes=%d err=%v", calls, store.purchase, store.writes, err)
+	}
+}
+
 func (*fakeModel) Name() string { return "fake-tool-model" }
 
 func (m *fakeModel) GenerateContent(_ context.Context, request *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
@@ -35,6 +115,10 @@ func (m *fakeModel) GenerateContent(_ context.Context, request *model.LLMRequest
 		m.calls++
 		if _, ok := request.Tools["buscar_produtos"]; !ok {
 			yield(nil, errors.New("ferramenta MCP ausente do agente"))
+			return
+		}
+		if _, ok := request.Tools["criar_requisicao"]; ok {
+			yield(nil, errors.New("ferramenta de escrita exposta antes da confirmação"))
 			return
 		}
 		if m.calls == 1 {
@@ -98,7 +182,7 @@ func TestRepairMalformedFinal(t *testing.T) {
 // TestADKToolCycle verifica que o ADK entrega a ferramenta MCP ao modelo e executa sua chamada.
 func TestADKToolCycle(t *testing.T) {
 	source := &fakeCatalog{}
-	mcpServer, err := mcptools.NewServer(source)
+	mcpServer, err := mcptools.NewServerWithPurchase(source, &fakeRecorderStore{}, []byte("test-confirmation-secret-with-32-bytes"))
 	if err != nil {
 		t.Fatal(err)
 	}

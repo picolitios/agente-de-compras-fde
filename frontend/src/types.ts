@@ -39,6 +39,7 @@ export interface Purchase {
   total_cents: number;
   created_at: string;
   items: Item[];
+  ferramentas?: string[];
 }
 
 export interface ChatResponse {

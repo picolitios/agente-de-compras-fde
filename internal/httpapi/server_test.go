@@ -136,6 +136,12 @@ func TestReadAndErrorStates(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("falha de catálogo: %d %s", response.Code, response.Body.String())
 	}
+	registrationFailure := newHandler(t, &testChat{err: purchaseflow.ErrRegistration}, testHealth{})
+	response = httptest.NewRecorder()
+	registrationFailure.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/requisicoes/proposal-id/confirmar", nil))
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "REGISTRATION_FAILED") {
+		t.Fatalf("falha de registro: %d %s", response.Code, response.Body.String())
+	}
 }
 
 // TestProviderErrors apresenta códigos estáveis sem devolver detalhes do provedor.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
+	"github.com/picolitios/agente-de-compras-fde/internal/tooltrace"
 )
 
 // Client usa MCP para revalidar produtos sem confiar no texto do modelo.
@@ -40,6 +41,7 @@ func (c *Client) Search(ctx context.Context, term string) (catalog.SearchResult,
 		return catalog.SearchResult{}, fmt.Errorf("conectar ao MCP: %w", err)
 	}
 	defer session.Close()
+	tooltrace.Add(ctx, tooltrace.Event{Origin: "backend", Name: "buscar_produtos", Term: term})
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "buscar_produtos", Arguments: map[string]any{"termo": term}})
 	if err != nil {
 		return catalog.SearchResult{}, fmt.Errorf("buscar no MCP: %w", err)
@@ -74,6 +76,7 @@ func (c *Client) Detail(ctx context.Context, id int) (catalog.Product, error) {
 		return catalog.Product{}, fmt.Errorf("conectar ao MCP: %w", err)
 	}
 	defer session.Close()
+	tooltrace.Add(ctx, tooltrace.Event{Origin: "backend", Name: "detalhar_produto", ProductID: id})
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "detalhar_produto", Arguments: map[string]any{"id": id}})
 	if err != nil {
 		return catalog.Product{}, fmt.Errorf("chamar MCP: %w", err)

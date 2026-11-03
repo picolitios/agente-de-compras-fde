@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
+	"github.com/picolitios/agente-de-compras-fde/internal/tooltrace"
 )
 
 var (
@@ -59,15 +60,16 @@ type Proposal struct {
 
 // Purchase representa o resultado efetivamente gravado na transação.
 type Purchase struct {
-	ID              int64     `json:"id"`
-	RequestNumber   string    `json:"request_number"`
-	OriginalRequest string    `json:"original_request"`
-	Status          string    `json:"status"`
-	Currency        string    `json:"currency"`
-	TotalCents      int64     `json:"total_cents"`
-	CreatedAt       time.Time `json:"created_at"`
-	Items           []Item    `json:"items"`
-	ToolCalls       []string  `json:"ferramentas,omitempty"`
+	ID              int64             `json:"id"`
+	RequestNumber   string            `json:"request_number"`
+	OriginalRequest string            `json:"original_request"`
+	Status          string            `json:"status"`
+	Currency        string            `json:"currency"`
+	TotalCents      int64             `json:"total_cents"`
+	CreatedAt       time.Time         `json:"created_at"`
+	Items           []Item            `json:"items"`
+	ToolCalls       []string          `json:"ferramentas,omitempty"`
+	ToolEvents      []tooltrace.Event `json:"execucoes,omitempty"`
 }
 
 // NewID cria um identificador opaco sem depender de uma sequência pública.

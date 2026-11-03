@@ -14,6 +14,7 @@ import (
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseagent"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
+	"github.com/picolitios/agente-de-compras-fde/internal/tooltrace"
 )
 
 var (
@@ -60,6 +61,7 @@ type Response struct {
 	Message           string              `json:"mensagem"`
 	ConversationID    string              `json:"conversa_id"`
 	ToolCalls         []string            `json:"ferramentas,omitempty"`
+	ToolEvents        []tooltrace.Event   `json:"execucoes,omitempty"`
 	SelectedProductID int                 `json:"produto_selecionado_id,omitempty"`
 	Products          []catalog.Product   `json:"produtos,omitempty"`
 	Proposal          *purchases.Proposal `json:"proposta,omitempty"`
@@ -86,7 +88,9 @@ func New(decider Decider, details Details, store Store, recorder Recorder, appro
 }
 
 // Start executa o agente e cria apenas uma proposta quando todos os critérios são verificáveis.
-func (f *Flow) Start(ctx context.Context, conversationID, message string) (Response, error) {
+func (f *Flow) Start(ctx context.Context, conversationID, message string) (response Response, err error) {
+	ctx = tooltrace.With(ctx)
+	defer func() { response.ToolEvents = tooltrace.Events(ctx) }()
 	message = strings.TrimSpace(message)
 	if message == "" || len(message) > 4000 || (conversationID != "" && !purchases.ValidID(conversationID)) {
 		return Response{}, purchases.ErrInvalid
@@ -121,6 +125,9 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	decision, err := f.decider.Decide(ctx, conversationID, message)
 	if err != nil {
 		return Response{}, fmt.Errorf("%w: %w", ErrAgent, err)
+	}
+	for _, event := range decision.ToolEvents {
+		tooltrace.Add(ctx, event)
 	}
 	decision.Category = canonicalCategory(decision.Category)
 	if continued {
@@ -160,7 +167,7 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		}
 		return Response{Type: "clarify", Message: clarification, ConversationID: conversationID, ToolCalls: decision.ToolCalls}, nil
 	}
-	response := Response{Type: decision.Status, Message: decision.Message, ConversationID: conversationID, ToolCalls: decision.ToolCalls}
+	response = Response{Type: decision.Status, Message: decision.Message, ConversationID: conversationID, ToolCalls: decision.ToolCalls}
 	// IDs fornecidos mesmo em uma resposta contraditória passam pela validação real do catálogo.
 	searchTerm := catalogSearchTerm(decision.Category)
 	if (decision.Status == "clarify" || decision.Status == "no_match") && decision.Category != "" && decision.Quantity > 0 &&
@@ -414,7 +421,9 @@ func explicitUnitLimit(message string) (string, bool) {
 }
 
 // Confirm revalida a seleção e autoriza uma chamada de gravação pelo agente.
-func (f *Flow) Confirm(ctx context.Context, id string, selections []purchases.Selection) (purchases.Purchase, error) {
+func (f *Flow) Confirm(ctx context.Context, id string, selections []purchases.Selection) (result purchases.Purchase, err error) {
+	ctx = tooltrace.With(ctx)
+	defer func() { result.ToolEvents = tooltrace.Events(ctx) }()
 	if !purchases.ValidID(id) {
 		return purchases.Purchase{}, purchases.ErrInvalid
 	}
@@ -494,6 +503,9 @@ func (f *Flow) Confirm(ctx context.Context, id string, selections []purchases.Se
 	toolCalls, err := f.recorder.Record(ctx, id, selections, grant)
 	if err != nil {
 		return purchases.Purchase{}, fmt.Errorf("%w: registrar por MCP: %w", ErrAgent, err)
+	}
+	for _, name := range toolCalls {
+		tooltrace.Add(ctx, tooltrace.Event{Origin: "agente", Name: name})
 	}
 	confirmed, err := f.store.GetProposal(ctx, id)
 	if err != nil {

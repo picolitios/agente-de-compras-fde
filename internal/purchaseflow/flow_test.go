@@ -11,6 +11,7 @@ import (
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchaseagent"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
+	"github.com/picolitios/agente-de-compras-fde/internal/tooltrace"
 )
 
 type stubDecider struct{ decision purchaseagent.Decision }
@@ -42,7 +43,8 @@ type stubDetails struct {
 	searchErr      error
 }
 
-func (s *stubDetails) Detail(_ context.Context, id int) (catalog.Product, error) {
+func (s *stubDetails) Detail(ctx context.Context, id int) (catalog.Product, error) {
+	tooltrace.Add(ctx, tooltrace.Event{Origin: "backend", Name: "detalhar_produto", ProductID: id})
 	if product, ok := s.products[id]; ok {
 		return product, nil
 	}
@@ -52,7 +54,8 @@ func (s *stubDetails) Detail(_ context.Context, id int) (catalog.Product, error)
 	return s.product, nil
 }
 
-func (s *stubDetails) Search(_ context.Context, term string) (catalog.SearchResult, error) {
+func (s *stubDetails) Search(ctx context.Context, term string) (catalog.SearchResult, error) {
+	tooltrace.Add(ctx, tooltrace.Event{Origin: "backend", Name: "buscar_produtos", Term: term})
 	if s.searchErr != nil {
 		return catalog.SearchResult{}, s.searchErr
 	}
@@ -149,6 +152,8 @@ func TestProposalAndConfirmation(t *testing.T) {
 	details := &stubDetails{product: catalog.Product{ID: 78, Title: "Laptop", Category: "laptops", Price: "1999.99"}}
 	decision := validDecision()
 	decision.ToolCalls = []string{"buscar_produtos", "detalhar_produto"}
+	decision.ToolEvents = []tooltrace.Event{{Origin: "agente", Name: "buscar_produtos", Term: "laptop"},
+		{Origin: "agente", Name: "detalhar_produto", ProductID: 78}}
 	flow, err := newTestFlow(stubDecider{decision}, details, store)
 	if err != nil {
 		t.Fatal(err)
@@ -158,9 +163,17 @@ func TestProposalAndConfirmation(t *testing.T) {
 		len(response.ToolCalls) != 2 || response.ToolCalls[0] != "buscar_produtos" || response.ToolCalls[1] != "detalhar_produto" {
 		t.Fatalf("proposta inesperada: %+v, %v", response, err)
 	}
+	if len(response.ToolEvents) < 3 || response.ToolEvents[0].Origin != "agente" ||
+		response.ToolEvents[1].ProductID != 78 || response.ToolEvents[2].Origin != "backend" || response.ToolEvents[2].ProductID != 78 {
+		t.Fatalf("sequência MCP incompleta: %+v", response.ToolEvents)
+	}
 	confirmed, err := flow.Confirm(context.Background(), response.Proposal.ID, nil)
 	if err != nil || confirmed.RequestNumber == "" || store.confirms != 1 || len(confirmed.ToolCalls) != 1 || confirmed.ToolCalls[0] != "criar_requisicao" {
 		t.Fatalf("confirmação inesperada: %+v, %v", confirmed, err)
+	}
+	if len(confirmed.ToolEvents) != 2 || confirmed.ToolEvents[0].Name != "detalhar_produto" ||
+		confirmed.ToolEvents[1].Name != "criar_requisicao" {
+		t.Fatalf("sequência de confirmação incompleta: %+v", confirmed.ToolEvents)
 	}
 	store.proposal.PurchaseID = &confirmed.ID
 	if _, err := flow.Confirm(context.Background(), response.Proposal.ID, nil); err != nil || store.confirms != 1 {

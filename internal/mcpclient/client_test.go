@@ -7,6 +7,7 @@ import (
 
 	"github.com/picolitios/agente-de-compras-fde/internal/catalog"
 	"github.com/picolitios/agente-de-compras-fde/internal/mcptools"
+	"github.com/picolitios/agente-de-compras-fde/internal/tooltrace"
 )
 
 type productCatalog struct{}
@@ -33,9 +34,13 @@ func TestSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := client.Search(context.Background(), " smartphone ")
+	ctx := tooltrace.With(context.Background())
+	result, err := client.Search(ctx, " smartphone ")
 	if err != nil || result.Total != 2 || len(result.Products) != 2 || result.Products[1].ID != 122 {
 		t.Fatalf("busca MCP inesperada: %+v, %v", result, err)
+	}
+	if events := tooltrace.Events(ctx); len(events) != 1 || events[0].Origin != "backend" || events[0].Term != "smartphone" {
+		t.Fatalf("busca não rastreada: %+v", events)
 	}
 }
 
@@ -55,8 +60,12 @@ func TestDetail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	product, err := client.Detail(context.Background(), 78)
+	ctx := tooltrace.With(context.Background())
+	product, err := client.Detail(ctx, 78)
 	if err != nil || product.ID != 78 || product.Price != "1999.99" {
 		t.Fatalf("detalhe MCP inesperado: %+v, %v", product, err)
+	}
+	if events := tooltrace.Events(ctx); len(events) != 1 || events[0].Origin != "backend" || events[0].ProductID != 78 {
+		t.Fatalf("detalhe não rastreado: %+v", events)
 	}
 }

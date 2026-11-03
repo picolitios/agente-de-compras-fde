@@ -197,6 +197,9 @@ func TestADKToolCycle(t *testing.T) {
 	if err != nil || decision.SelectedProductID != 78 || source.searches != 1 || model.calls != 2 || !reflect.DeepEqual(decision.ToolCalls, []string{"buscar_produtos"}) {
 		t.Fatalf("ciclo ADK inesperado: %+v, buscas=%d, chamadas=%d, erro=%v", decision, source.searches, model.calls, err)
 	}
+	if len(decision.ToolEvents) != 1 || decision.ToolEvents[0].Name != "buscar_produtos" || decision.ToolEvents[0].Term != "laptop" {
+		t.Fatalf("evento de ferramenta ausente: %+v", decision.ToolEvents)
+	}
 }
 
 // TestModelCallLimit interrompe um ciclo de ferramentas acima do limite configurado.

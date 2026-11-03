@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/picolitios/agente-de-compras-fde/internal/purchases"
+	"github.com/picolitios/agente-de-compras-fde/internal/tooltrace"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
@@ -32,18 +33,19 @@ const decisionFormat = `{"status":"clarify|no_match|select","message":"texto em 
 
 // Decision contém a interpretação do modelo; nenhum campo é fonte de verdade financeira.
 type Decision struct {
-	Status              string   `json:"status"`
-	Message             string   `json:"message"`
-	Category            string   `json:"category"`
-	Quantity            int      `json:"quantity"`
-	MaxUnitPrice        string   `json:"max_unit_price"`
-	MaxTotalPrice       string   `json:"max_total_price"`
-	RequiredBrand       string   `json:"required_brand"`
-	RequiredFeatures    []string `json:"required_features"`
-	Unverifiable        []string `json:"unverifiable"`
-	SelectedProductID   int      `json:"selected_product_id"`
-	CandidateProductIDs []int    `json:"candidate_product_ids"`
-	ToolCalls           []string `json:"-"`
+	Status              string            `json:"status"`
+	Message             string            `json:"message"`
+	Category            string            `json:"category"`
+	Quantity            int               `json:"quantity"`
+	MaxUnitPrice        string            `json:"max_unit_price"`
+	MaxTotalPrice       string            `json:"max_total_price"`
+	RequiredBrand       string            `json:"required_brand"`
+	RequiredFeatures    []string          `json:"required_features"`
+	Unverifiable        []string          `json:"unverifiable"`
+	SelectedProductID   int               `json:"selected_product_id"`
+	CandidateProductIDs []int             `json:"candidate_product_ids"`
+	ToolCalls           []string          `json:"-"`
+	ToolEvents          []tooltrace.Event `json:"-"`
 }
 
 // ADKDecider executa um único agente ADK com ferramentas de catálogo remotas.
@@ -95,6 +97,7 @@ func (d *ADKDecider) Decide(ctx context.Context, conversationID, message string)
 	}
 	var final string
 	var toolCalls []string
+	var toolEvents []tooltrace.Event
 	for event, err := range r.Run(ctx, "demo", conversationID, genai.NewContentFromText(message, genai.RoleUser), agent.RunConfig{}) {
 		if err != nil {
 			return Decision{}, fmt.Errorf("executar agente ADK: %w", err)
@@ -106,6 +109,7 @@ func (d *ADKDecider) Decide(ctx context.Context, conversationID, message string)
 		for _, part := range event.Content.Parts {
 			if part != nil && part.FunctionCall != nil {
 				toolCalls = append(toolCalls, part.FunctionCall.Name)
+				toolEvents = append(toolEvents, functionEvent(part.FunctionCall.Name, part.FunctionCall.Args))
 			}
 		}
 		if !event.IsFinalResponse() {
@@ -123,11 +127,33 @@ func (d *ADKDecider) Decide(ctx context.Context, conversationID, message string)
 	decision, err := parseDecision(final)
 	if err == nil || !errors.Is(err, ErrInvalidDecision) || d.repairModel == nil || modelCalls >= d.maxModelCalls {
 		decision.ToolCalls = toolCalls
+		decision.ToolEvents = toolEvents
 		return decision, err
 	}
 	decision, err = d.repairDecision(ctx, message, final)
 	decision.ToolCalls = toolCalls
+	decision.ToolEvents = toolEvents
 	return decision, err
+}
+
+// functionEvent guarda somente os argumentos úteis para explicar a consulta ao usuário.
+func functionEvent(name string, args map[string]any) tooltrace.Event {
+	event := tooltrace.Event{Origin: "agente", Name: name}
+	if term, ok := args["termo"].(string); ok {
+		event.Term = term
+	}
+	switch id := args["id"].(type) {
+	case int:
+		event.ProductID = id
+	case float64:
+		event.ProductID = int(id)
+	case json.Number:
+		value, err := id.Int64()
+		if err == nil && value > 0 && value <= int64(^uint(0)>>1) {
+			event.ProductID = int(value)
+		}
+	}
+	return event
 }
 
 // Record oferece a ferramenta de escrita apenas após a confirmação explícita recebida pela API.

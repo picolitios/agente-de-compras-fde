@@ -17,6 +17,8 @@ const maxPendingBudgets = 1000
 var followupAmountPattern = regexp.MustCompile(`(?i)\b([0-9][0-9.,]*)(?:\s*(mil|k))?\b`)
 var numericWordPattern = regexp.MustCompile(`^[0-9][0-9.,]*$`)
 var groupedThousandsPattern = regexp.MustCompile(`^[0-9]{1,3}([.,][0-9]{3})+$`)
+var repeatedScopePattern = regexp.MustCompile(`(?i)\b(?:(?:preciso\s+de|quero|busco)\s+)?(um|uma|[1-9][0-9]{0,2})\s+(carros?|celulares?|smartphones?|laptops?|notebooks?)\b(?:\s+s[oó])?`)
+var quantityAnswerPattern = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|s[oó])\s+)?(um|uma|[1-9][0-9]{0,2})(?:\s+s[oó])?\s*[.!?]?\s*$`)
 
 var budgetWords = map[string]bool{
 	"sim": true, "ok": true, "claro": true, "pode": true, "ser": true, "aumentar": true, "aumente": true,
@@ -31,15 +33,22 @@ var budgetWords = map[string]bool{
 
 // pendingBudget guarda o escopo de uma sugestão de preço ou proposta ainda ativa.
 type pendingBudget struct {
-	category     string
-	quantity     int
-	minimumCents int64
-	proposalID   string
-	expiresAt    time.Time
+	category           string
+	quantity           int
+	requestedUnitCents int64
+	minimumCents       int64
+	proposalID         string
+	expiresAt          time.Time
 }
 
 // budgetFollowup interpreta uma resposta curta que muda apenas o limite unitário.
 func budgetFollowup(message string, pending pendingBudget) (string, bool) {
+	if category, quantity, remainder, ok := repeatedScope(message); ok {
+		if category != pending.category || quantity != pending.quantity {
+			return "", false
+		}
+		message = remainder
+	}
 	if !budgetOnlyWords(message) {
 		return "", false
 	}
@@ -64,6 +73,63 @@ func budgetFollowup(message string, pending pendingBudget) (string, bool) {
 		return "", false
 	}
 	return centsDecimal(cents), true
+}
+
+// repeatedScope separa uma quantidade e categoria reafirmadas de um ajuste de preço.
+func repeatedScope(message string) (string, int, string, bool) {
+	matches := repeatedScopePattern.FindAllStringSubmatchIndex(message, 2)
+	if len(matches) != 1 {
+		return "", 0, "", false
+	}
+	match := matches[0]
+	rawQuantity := strings.ToLower(message[match[2]:match[3]])
+	quantity := 1
+	if rawQuantity != "um" && rawQuantity != "uma" {
+		var err error
+		quantity, err = strconv.Atoi(rawQuantity)
+		if err != nil {
+			return "", 0, "", false
+		}
+	}
+	category := canonicalCategory(strings.ToLower(message[match[4]:match[5]]))
+	remainder := strings.Trim(message[:match[0]]+" "+message[match[1]:], " ,.!?;:\t\r\n")
+	return category, quantity, remainder, true
+}
+
+// completeCarClarification reúne uma quantidade curta e o teto já informado para evitar perguntar de novo.
+func completeCarClarification(message string, pending pendingBudget) (string, int, string, bool) {
+	if pending.category != "vehicle" || pending.quantity != 0 {
+		return "", 0, "", false
+	}
+	category, quantity, remainder, ok := repeatedScope(message)
+	if !ok {
+		matches := quantityAnswerPattern.FindStringSubmatch(message)
+		if matches == nil {
+			return "", 0, "", false
+		}
+		category, remainder = "vehicle", ""
+		if strings.EqualFold(matches[1], "um") || strings.EqualFold(matches[1], "uma") {
+			quantity = 1
+		} else {
+			quantity, _ = strconv.Atoi(matches[1])
+		}
+	}
+	if category != "vehicle" || quantity < 1 || quantity > 1000 {
+		return "", 0, "", false
+	}
+	limit := pending.requestedUnitCents
+	if remainder != "" {
+		parsed, ok := budgetFollowup(remainder, pending)
+		if !ok {
+			return "", 0, "", false
+		}
+		limit, _ = purchases.ParseCents(parsed)
+	}
+	limitText := ""
+	if limit > 0 {
+		limitText = centsDecimal(limit)
+	}
+	return standaloneBudgetRequest(pendingBudget{category: category, quantity: quantity}, limitText), quantity, limitText, true
 }
 
 // budgetOnlyWords rejeita respostas que também mudam produto, quantidade ou outras características.
@@ -132,7 +198,24 @@ func standaloneBudgetRequest(pending pendingBudget, limit string) string {
 	if pending.quantity > 1 {
 		noun = map[string]string{"vehicle": "carros", "smartphones": "celulares", "laptops": "laptops"}[pending.category]
 	}
+	if limit == "" {
+		return fmt.Sprintf("%d %s", pending.quantity, noun)
+	}
 	return fmt.Sprintf("%d %s até US$ %s cada", pending.quantity, noun, limit)
+}
+
+// rememberCarClarification guarda apenas a categoria e o teto enquanto falta a quantidade.
+func (f *Flow) rememberCarClarification(conversationID, message string) {
+	if mentionsOtherCurrency(message) {
+		f.clearPending(conversationID)
+		return
+	}
+	var limit int64
+	if raw, ok := explicitUnitLimit(message); ok {
+		limit, _ = purchases.ParseCents(raw)
+	}
+	f.storeBudgetContext(conversationID, pendingBudget{category: "vehicle", requestedUnitCents: limit,
+		expiresAt: time.Now().Add(pendingBudgetTTL)})
 }
 
 // pendingFor retorna contexto ainda válido sem compartilhar o mapa entre requisições simultâneas.

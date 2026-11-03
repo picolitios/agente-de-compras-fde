@@ -19,10 +19,10 @@ type noMatchResult struct {
 }
 
 // clarifyCarAvailability confere a categoria sem presumir uma quantidade ausente no pedido.
-func (f *Flow) clarifyCarAvailability(ctx context.Context, request string) (string, error) {
+func (f *Flow) clarifyCarAvailability(ctx context.Context, request string) (string, bool, error) {
 	result, err := f.details.Search(ctx, "category:vehicle")
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrCatalog, err)
+		return "", false, fmt.Errorf("%w: %v", ErrCatalog, err)
 	}
 	var cheapest catalog.Product
 	var minimum int64
@@ -32,18 +32,18 @@ func (f *Flow) clarifyCarAvailability(ctx context.Context, request string) (stri
 		}
 		cents, err := purchases.ParseCents(product.Price)
 		if err != nil {
-			return "", fmt.Errorf("%w: preço inválido na busca", ErrCatalog)
+			return "", false, fmt.Errorf("%w: preço inválido na busca", ErrCatalog)
 		}
 		if cheapest.ID == 0 || cents < minimum {
 			cheapest, minimum = product, cents
 		}
 	}
 	if cheapest.ID == 0 {
-		return "Não encontrei carros no catálogo de demonstração; esse item não está disponível para requisição. Posso consultar celulares, laptops ou itens de mercado.", nil
+		return "Não encontrei carros no catálogo de demonstração; esse item não está disponível para requisição. Posso consultar celulares, laptops ou itens de mercado.", false, nil
 	}
 	message := fmt.Sprintf("Há carros no catálogo de demonstração. O menor preço encontrado é %s por unidade (%s).", formatUSD(minimum), cheapest.Title)
 	if mentionsOtherCurrency(request) {
-		return message + " O catálogo usa USD; informe a quantidade e um limite em dólares para preparar opções.", nil
+		return message + " O catálogo usa USD; informe a quantidade e um limite em dólares para preparar opções.", true, nil
 	}
 	if rawLimit, ok := explicitUnitLimit(request); ok {
 		limit, _ := purchases.ParseCents(rawLimit)
@@ -51,7 +51,7 @@ func (f *Flow) clarifyCarAvailability(ctx context.Context, request string) (stri
 			message += fmt.Sprintf(" O limite de %s está abaixo desse valor.", formatUSD(limit))
 		}
 	}
-	return message + " Quantos carros você deseja? Informe também os demais critérios obrigatórios, se houver.", nil
+	return message + " Quantos carros você deseja? Informe também os demais critérios obrigatórios, se houver.", true, nil
 }
 
 // noMatchSubject identifica apenas pedidos cuja tradução para a busca do catálogo é conhecida.

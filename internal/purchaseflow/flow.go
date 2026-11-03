@@ -16,13 +16,15 @@ import (
 )
 
 var (
-	ErrCatalog          = errors.New("catálogo indisponível")
-	ErrAgent            = errors.New("agente indisponível")
-	knownProductPattern = regexp.MustCompile(`(?i)\b([1-9][0-9]{0,2})\s+(smartphones?|celulares?|laptops?|notebooks?|carros?)\b`)
-	carMentionPattern   = regexp.MustCompile(`(?i)\bcarros?\b`)
-	otherCurrencyWords  = regexp.MustCompile(`(?i)\b(reais|euros?|libras?)\b`)
-	singleCarPattern    = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco|um)\s+)*carro(?:\s+(?:de\s+)?at[eé]\s+(?:US\$\s*)?[0-9][0-9.,]*\s*(?:d[oó]lares?|usd)?(?:\s+cada)?)?\s*[.!?]?\s*$`)
-	unitLimitPattern    = regexp.MustCompile(`(?i)\bat[eé]\s+(?:US\$\s*)?([0-9][0-9.,]*)`)
+	ErrCatalog             = errors.New("catálogo indisponível")
+	ErrAgent               = errors.New("agente indisponível")
+	knownProductPattern    = regexp.MustCompile(`(?i)\b([1-9][0-9]{0,2})\s+(smartphones?|celulares?|laptops?|notebooks?|carros?)\b`)
+	otherCurrencyWords     = regexp.MustCompile(`(?i)\b(reais|euros?|libras?)\b`)
+	singleCarPattern       = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco|um)\s+)*carro(?:\s+(?:de\s+)?at[eé]\s+(?:US\$\s*)?[0-9][0-9.,]*\s*(?:d[oó]lares?|usd)?(?:\s+cada)?)?\s*[.!?]?\s*$`)
+	bareCarPricePattern    = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco|um)\s+)*carro\s+(?:por\s+)?(?:(?:US\$\s*)?([0-9][0-9.,]*)\s+(?:d[oó]lares?|usd)|US\$\s*([0-9][0-9.,]*))(?:\s+cada)?\s*[.!?]?\s*$`)
+	simplePluralCarPattern = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco)\s+)?carros(?:\s+(?:de\s+)?at[eé]\s+(?:(?:US\$|R\$)\s*)?[0-9][0-9.,]*\s*(?:d[oó]lares?|usd|reais|euros?)?)?\s*[.!?]?\s*$`)
+	simpleOrderPattern     = regexp.MustCompile(`(?i)^\s*(?:(?:quero|preciso\s+de|busco)\s+)?[1-9][0-9]{0,2}\s+(?:carros?|celulares?|smartphones?|laptops?|notebooks?)\s+(?:de\s+)?at[eé]\s+(?:US\$\s*)?[0-9][0-9.,]*\s*(?:d[oó]lares?|usd)?(?:\s+cada)?\s*[.!?]?\s*$`)
+	unitLimitPattern       = regexp.MustCompile(`(?i)\bat[eé]\s+(?:US\$\s*)?([0-9][0-9.,]*)`)
 )
 
 const noMatchMessage = "Nenhum item foi encontrado dentro dos critérios informados. Tente alterar o escopo."
@@ -89,9 +91,18 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	// Uma resposta curta de orçamento reaproveita somente categoria e quantidade já verificadas nesta conversa.
 	var previous pendingBudget
 	var adjustedLimit string
+	var continued bool
 	if saved, ok := f.pendingFor(conversationID); ok {
-		if limit, recognized := budgetFollowup(message, saved); recognized {
+		if saved.quantity == 0 {
+			if request, quantity, limit, recognized := completeCarClarification(message, saved); recognized {
+				previous, adjustedLimit, continued = pendingBudget{category: saved.category, quantity: quantity}, limit, true
+				message = request
+			} else {
+				f.clearPending(conversationID)
+			}
+		} else if limit, recognized := budgetFollowup(message, saved); recognized {
 			previous, adjustedLimit = saved, limit
+			continued = true
 			message = standaloneBudgetRequest(saved, limit)
 		} else {
 			f.clearPending(conversationID)
@@ -102,7 +113,7 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		return Response{}, fmt.Errorf("%w: %w", ErrAgent, err)
 	}
 	decision.Category = canonicalCategory(decision.Category)
-	if adjustedLimit != "" {
+	if continued {
 		decision.Category, decision.Quantity = previous.category, previous.quantity
 		decision.MaxUnitPrice, decision.MaxTotalPrice = adjustedLimit, ""
 		decision.RequiredBrand, decision.RequiredFeatures, decision.Unverifiable = "", nil, nil
@@ -110,13 +121,13 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 	// Recupera pedidos inequívocos quando o modelo pequeno omite ou distorce categoria e quantidade.
 	explicitCategory := false
 	if decision.Status == "no_match" || decision.Status == "clarify" || decision.Status == "select" {
-		simpleCar := singleCarPattern.MatchString(message)
+		simpleRequest := simpleCarRequest(message) || simpleOrderPattern.MatchString(message)
 		if category, quantity, ok := knownCategoryQuantity(message); ok &&
-			(simpleCar || decision.Category == "" || decision.Category == category) &&
-			(simpleCar || decision.Quantity == 0 || decision.Quantity == quantity) {
+			(simpleRequest || decision.Category == "" || decision.Category == category) &&
+			(simpleRequest || decision.Quantity == 0 || decision.Quantity == quantity) {
 			decision.Category, decision.Quantity = category, quantity
 			explicitCategory = true
-			if simpleCar {
+			if simpleRequest {
 				decision.MaxUnitPrice, decision.MaxTotalPrice = "", ""
 				decision.RequiredBrand, decision.RequiredFeatures, decision.Unverifiable = "", nil, nil
 			}
@@ -128,12 +139,14 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 			decision.MaxUnitPrice = limit
 		}
 	}
-	// Sem quantidade inequívoca, confirme a existência de carros antes de repassar uma afirmação do modelo.
-	if carMentionPattern.MatchString(message) && len(knownProductPattern.FindAllStringSubmatch(message, 2)) == 0 &&
-		!singleCarPattern.MatchString(message) {
-		clarification, err := f.clarifyCarAvailability(ctx, message)
+	// Em uma consulta plural simples, confirme a categoria e peça quantidade sem descartar outros critérios.
+	if simplePluralCarPattern.MatchString(message) {
+		clarification, available, err := f.clarifyCarAvailability(ctx, message)
 		if err != nil {
 			return Response{}, err
+		}
+		if available {
+			f.rememberCarClarification(conversationID, message)
 		}
 		return Response{Type: "clarify", Message: clarification, ConversationID: conversationID}, nil
 	}
@@ -163,14 +176,20 @@ func (f *Flow) Start(ctx context.Context, conversationID, message string) (Respo
 		}
 		return response, nil
 	}
+	// Um requisito não verificável deve gerar esclarecimento mesmo se a seleção do modelo for incompleta.
+	if len(decision.Unverifiable) > 0 {
+		response.Type = "clarify"
+		response.Message = "Não consigo confirmar todos os critérios obrigatórios no catálogo. Você quer ajustar ou remover o critério que não pode ser verificado?"
+		return response, nil
+	}
+	if mentionsOtherCurrency(message) {
+		response.Type = "clarify"
+		response.Message = "O catálogo usa USD. Informe o limite em dólares para preparar opções verificadas."
+		return response, nil
+	}
 	if decision.Status != "select" || decision.Quantity <= 0 || decision.Quantity > 1000 || decision.Category == "" ||
 		(decision.SelectedProductID <= 0 && len(decision.CandidateProductIDs) == 0 && searchTerm == "") || len(decision.CandidateProductIDs) > 20 {
 		return Response{}, fmt.Errorf("%w: seleção inválida", ErrAgent)
-	}
-	if len(decision.Unverifiable) > 0 || mentionsOtherCurrency(message) {
-		response.Type = "clarify"
-		response.Message = "Há requisitos que o catálogo não permite confirmar ou a moeda não é USD. Esclareça o pedido antes de criar uma proposta."
-		return response, nil
 	}
 	var maxUnit *int64
 	if decision.MaxUnitPrice != "" {
@@ -329,10 +348,15 @@ func canonicalCategory(category string) string {
 	}
 }
 
+// simpleCarRequest reconhece um carro com teto expresso de forma direta ou com "até".
+func simpleCarRequest(message string) bool {
+	return singleCarPattern.MatchString(message) || bareCarPricePattern.MatchString(message)
+}
+
 // knownCategoryQuantity recupera quantidade explícita ou um único carro no singular.
 func knownCategoryQuantity(message string) (string, int, bool) {
 	matches := knownProductPattern.FindAllStringSubmatch(message, 2)
-	if len(matches) == 0 && singleCarPattern.MatchString(message) {
+	if len(matches) == 0 && simpleCarRequest(message) {
 		return "vehicle", 1, true
 	}
 	if len(matches) != 1 {
@@ -359,15 +383,24 @@ func explicitUnitLimit(message string) (string, bool) {
 	if strings.Contains(strings.ToLower(message), "total") {
 		return "", false
 	}
+	if matches := bareCarPricePattern.FindStringSubmatch(message); matches != nil {
+		raw := matches[1]
+		if raw == "" {
+			raw = matches[2]
+		}
+		if cents, ok := humanPriceCents(raw, ""); ok && cents > 0 {
+			return centsDecimal(cents), true
+		}
+	}
 	matches := unitLimitPattern.FindAllStringSubmatch(message, 2)
 	if len(matches) != 1 {
 		return "", false
 	}
-	limit := strings.ReplaceAll(matches[0][1], ",", ".")
-	if _, err := purchases.ParseCents(limit); err != nil {
+	cents, ok := humanPriceCents(matches[0][1], "")
+	if !ok || cents <= 0 {
 		return "", false
 	}
-	return limit, true
+	return centsDecimal(cents), true
 }
 
 // Confirm consulta o catálogo novamente e deixa o repositório fazer a gravação atômica.

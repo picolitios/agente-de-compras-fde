@@ -392,12 +392,183 @@ func TestSingularCarProposal(t *testing.T) {
 	}
 }
 
+// TestBareCarPriceContinuation cobre a resposta humana que reafirma a quantidade ao elevar o teto.
+func TestBareCarPriceContinuation(t *testing.T) {
+	vehicle := catalog.Product{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"}
+	decider := &sequenceDecider{decisions: []purchaseagent.Decision{
+		{Status: "clarify", Message: "Quantos carros?", Category: "groceries", Quantity: 5},
+		{Status: "clarify", Message: "Quantos carros?", Category: "groceries", Quantity: 5},
+	}}
+	flow, _ := New(decider, &stubDetails{products: map[int]catalog.Product{169: vehicle},
+		searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}}}, &stubStore{})
+	first, err := flow.Start(context.Background(), "", "carro 100 dolares")
+	if err != nil || first.Type != "no_match" || !strings.Contains(first.Message, "US$ 100,00") ||
+		strings.Contains(first.Message, "Quantos carros") {
+		t.Fatalf("pedido singular com preço direto inesperado: %+v, %v", first, err)
+	}
+	second, err := flow.Start(context.Background(), first.ConversationID, "aumente pra 25000,00, preciso de um carro só")
+	if err != nil || second.Type != "proposal" || len(second.Products) != 1 ||
+		second.Proposal.Requirements.Category != "vehicle" || second.Proposal.Requirements.Quantity != 1 ||
+		second.Proposal.Requirements.MaxUnitCents == nil || *second.Proposal.Requirements.MaxUnitCents != 2500000 {
+		t.Fatalf("resposta com preço e quantidade repetiu esclarecimento: %+v, %v", second, err)
+	}
+}
+
+// TestCarClarificationContinuation mantém o primeiro teto quando a quantidade vem em outra mensagem.
+func TestCarClarificationContinuation(t *testing.T) {
+	vehicle := catalog.Product{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"}
+	for _, answer := range []string{"1", "quero um carro só", "preciso de um carro"} {
+		t.Run(answer, func(t *testing.T) {
+			decider := &sequenceDecider{decisions: []purchaseagent.Decision{
+				{Status: "clarify", Message: "Quantos carros?"},
+				{Status: "clarify", Message: "Quantos carros?"},
+				{Status: "clarify", Message: "Quantos carros?"},
+			}}
+			flow, _ := New(decider, &stubDetails{products: map[int]catalog.Product{169: vehicle},
+				searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}}}, &stubStore{})
+			first, err := flow.Start(context.Background(), "", "carros até 100 dólares")
+			if err != nil || first.Type != "clarify" {
+				t.Fatalf("pergunta inicial inesperada: %+v, %v", first, err)
+			}
+			second, err := flow.Start(context.Background(), first.ConversationID, answer)
+			if err != nil || second.Type != "no_match" || !strings.Contains(second.Message, "US$ 100,00") ||
+				strings.Contains(second.Message, "Quantos carros") {
+				t.Fatalf("quantidade não aplicada: %+v, %v", second, err)
+			}
+			third, err := flow.Start(context.Background(), first.ConversationID, "pode ser 25000,00")
+			if err != nil || third.Type != "proposal" || third.Proposal.Requirements.Quantity != 1 {
+				t.Fatalf("orçamento após esclarecimento inesperado: %+v, %v", third, err)
+			}
+		})
+	}
+}
+
+// TestCarClarificationWithBudget aplica quantidade e novo limite informados na mesma resposta.
+func TestCarClarificationWithBudget(t *testing.T) {
+	vehicle := catalog.Product{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"}
+	for _, answer := range []string{"um carro, pode ser 25000", "aumente pra 25000,00, preciso de um carro só"} {
+		t.Run(answer, func(t *testing.T) {
+			decider := &sequenceDecider{decisions: []purchaseagent.Decision{
+				{Status: "clarify", Message: "Quantos carros?"},
+				{Status: "clarify", Message: "Quantos carros?"},
+			}}
+			flow, _ := New(decider, &stubDetails{products: map[int]catalog.Product{169: vehicle},
+				searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}}}, &stubStore{})
+			first, err := flow.Start(context.Background(), "", "carros até 100 dólares")
+			if err != nil || first.Type != "clarify" {
+				t.Fatalf("pergunta inicial inesperada: %+v, %v", first, err)
+			}
+			second, err := flow.Start(context.Background(), first.ConversationID, answer)
+			if err != nil || second.Type != "proposal" || second.Proposal.Requirements.Quantity != 1 ||
+				second.Proposal.Requirements.MaxUnitCents == nil || *second.Proposal.Requirements.MaxUnitCents != 2500000 {
+				t.Fatalf("esclarecimento com novo teto inesperado: %+v, %v", second, err)
+			}
+		})
+	}
+}
+
+// TestCarClarificationDoesNotLeak deixa uma troca de categoria seguir como novo pedido.
+func TestCarClarificationDoesNotLeak(t *testing.T) {
+	vehicle := catalog.Product{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"}
+	decider := &sequenceDecider{decisions: []purchaseagent.Decision{
+		{Status: "clarify", Message: "Quantos carros?"},
+		{Status: "clarify", Message: "Quantos celulares?", Category: "smartphones"},
+	}}
+	flow, _ := New(decider, &stubDetails{searchByTerm: map[string][]catalog.Product{
+		"category:vehicle": {vehicle}}}, &stubStore{})
+	first, err := flow.Start(context.Background(), "", "carros até 100 dólares")
+	if err != nil || first.Type != "clarify" {
+		t.Fatalf("pergunta inicial inesperada: %+v, %v", first, err)
+	}
+	second, err := flow.Start(context.Background(), first.ConversationID, "quero um celular")
+	if err != nil || second.Type != "clarify" || second.Message != "Quantos celulares?" ||
+		decider.messages[1] != "quero um celular" {
+		t.Fatalf("categoria anterior vazou para novo pedido: %+v, %v", second, err)
+	}
+}
+
+// TestSimpleOrderAfterCarInquiry corrige a categoria antiga quando o novo pedido é inequívoco.
+func TestSimpleOrderAfterCarInquiry(t *testing.T) {
+	vehicle := catalog.Product{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"}
+	phone := catalog.Product{ID: 121, Title: "Phone", Category: "smartphones", Price: "799.99"}
+	decider := &sequenceDecider{decisions: []purchaseagent.Decision{
+		{Status: "clarify", Message: "Quantos carros?"},
+		{Status: "no_match", Message: "Não há opções", Category: "vehicle", Quantity: 1, Unverifiable: []string{"carro"}},
+	}}
+	flow, _ := New(decider, &stubDetails{products: map[int]catalog.Product{121: phone},
+		searchByTerm: map[string][]catalog.Product{"category:vehicle": {vehicle}, "smartphone": {phone}}}, &stubStore{})
+	first, err := flow.Start(context.Background(), "", "carros até 100 dólares")
+	if err != nil || first.Type != "clarify" {
+		t.Fatalf("consulta inicial inesperada: %+v, %v", first, err)
+	}
+	second, err := flow.Start(context.Background(), first.ConversationID, "quero 2 celulares até 1000 dólares")
+	if err != nil || second.Type != "proposal" || second.Proposal.Requirements.Category != "smartphones" ||
+		second.Proposal.Requirements.Quantity != 2 || second.Proposal.Requirements.MaxUnitCents == nil ||
+		*second.Proposal.Requirements.MaxUnitCents != 100000 {
+		t.Fatalf("pedido novo contaminado pela categoria antiga: %+v, %v", second, err)
+	}
+}
+
 // TestSingularCarPattern não interpreta pedidos mistos ou qualificados como um carro simples.
 func TestSingularCarPattern(t *testing.T) {
-	for _, message := range []string{"carro e laptop até 100 dólares", "carro elétrico até 100 dólares", "carros até 100 dólares"} {
+	for _, message := range []string{"carro e laptop até 100 dólares", "carro elétrico até 100 dólares", "carros até 100 dólares", "carro 2024"} {
 		if _, _, ok := knownCategoryQuantity(message); ok {
 			t.Errorf("pedido ambíguo inferido: %q", message)
 		}
+	}
+	for _, test := range []struct{ message, price string }{
+		{"carro 100 dolares", "100"},
+		{"quero um carro por 25.000 dólares", "25000"},
+		{"carro US$ 25.000", "25000"},
+		{"carro até US$ 25.000", "25000"},
+	} {
+		category, quantity, ok := knownCategoryQuantity(test.message)
+		price, priceOK := explicitUnitLimit(test.message)
+		if !ok || category != "vehicle" || quantity != 1 || !priceOK || price != test.price {
+			t.Errorf("carro com preço direto %q: %s, %d, %t, %q, %t", test.message, category, quantity, ok, price, priceOK)
+		}
+	}
+}
+
+// TestSimpleOrderPattern limita a recuperação determinística a pedidos sem critérios adicionais.
+func TestSimpleOrderPattern(t *testing.T) {
+	for _, message := range []string{"quero 2 celulares até 1000 dólares", "3 laptops até US$ 2000 cada", "2 carros até 30000 dólares"} {
+		if !simpleOrderPattern.MatchString(message) {
+			t.Errorf("pedido simples não reconhecido: %q", message)
+		}
+	}
+	for _, message := range []string{"2 celulares Samsung até 1000 dólares", "2 carros e um laptop", "2 laptops com SSD"} {
+		if simpleOrderPattern.MatchString(message) {
+			t.Errorf("pedido com outro critério tratado como simples: %q", message)
+		}
+	}
+}
+
+// TestQualifiedCarInquiryKeepsCriteria impede que a recuperação simples apague uma característica obrigatória.
+func TestQualifiedCarInquiryKeepsCriteria(t *testing.T) {
+	decider := &sequenceDecider{decisions: []purchaseagent.Decision{
+		{Status: "clarify", Message: "Não consigo verificar se os carros são elétricos", Category: "vehicle", Unverifiable: []string{"elétrico"}},
+		{Status: "clarify", Message: "Preciso confirmar o requisito elétrico", Category: "vehicle", Unverifiable: []string{"elétrico"}},
+	}}
+	flow, _ := New(decider, &stubDetails{}, &stubStore{})
+	first, err := flow.Start(context.Background(), "", "carros elétricos até 30000 dólares")
+	if err != nil || first.Type != "clarify" || first.Message != "Não consigo verificar se os carros são elétricos" {
+		t.Fatalf("requisito elétrico ignorado: %+v, %v", first, err)
+	}
+	second, err := flow.Start(context.Background(), first.ConversationID, "1")
+	if err != nil || second.Type != "clarify" || second.Proposal != nil || decider.messages[1] != "1" {
+		t.Fatalf("requisito elétrico perdido após resposta curta: %+v, %v", second, err)
+	}
+}
+
+// TestUnverifiableSelectionClarifies impede erro 502 quando o modelo marca seleção contraditória.
+func TestUnverifiableSelectionClarifies(t *testing.T) {
+	decision := purchaseagent.Decision{Status: "select", Message: "Não há carros elétricos",
+		Unverifiable: []string{"carros elétricos"}}
+	flow, _ := New(stubDecider{decision}, &stubDetails{}, &stubStore{})
+	response, err := flow.Start(context.Background(), "", "carros elétricos até 30000 dólares")
+	if err != nil || response.Type != "clarify" || response.Proposal != nil {
+		t.Fatalf("seleção contraditória não pediu esclarecimento: %+v, %v", response, err)
 	}
 }
 
@@ -684,7 +855,7 @@ func TestBudgetContinuationExpires(t *testing.T) {
 
 // TestBudgetFollowupParsing aceita formatos comuns de USD sem absorver critérios novos.
 func TestBudgetFollowupParsing(t *testing.T) {
-	pending := pendingBudget{minimumCents: 2499999}
+	pending := pendingBudget{category: "vehicle", quantity: 1, minimumCents: 2499999}
 	for _, test := range []struct {
 		message, want string
 	}{
@@ -695,6 +866,7 @@ func TestBudgetFollowupParsing(t *testing.T) {
 		{"pode ficar em 25000,00", "25000"},
 		{"fechado em 25000,00", "25000"},
 		{"aumento pra 60000,00", "60000"},
+		{"aumente pra 25000,00, preciso de um carro só", "25000"},
 		{"sim", "24999.99"},
 	} {
 		got, ok := budgetFollowup(test.message, pending)
@@ -702,7 +874,7 @@ func TestBudgetFollowupParsing(t *testing.T) {
 			t.Errorf("ajuste %q: esperado %q, recebeu %q (ok=%t)", test.message, test.want, got, ok)
 		}
 	}
-	for _, message := range []string{"não aumente", "quero 2 carros até 25 mil", "somente carros elétricos", "pode ser 25000,00 com carro elétrico", "o", ""} {
+	for _, message := range []string{"não aumente", "quero 2 carros até 25 mil", "somente carros elétricos", "pode ser 25000,00 com carro elétrico", "aumente para 25000,00, preciso de dois carros", "o", ""} {
 		if got, ok := budgetFollowup(message, pending); ok {
 			t.Errorf("mensagem não relacionada %q aceita como preço %q", message, got)
 		}

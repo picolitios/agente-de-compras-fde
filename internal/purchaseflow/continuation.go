@@ -77,7 +77,7 @@ func budgetOnlyWords(message string) bool {
 	}
 	for _, word := range words {
 		word = strings.Trim(word, ",.!?;:")
-		if budgetWords[word] || numericWordPattern.MatchString(word) {
+		if budgetWords[word] || numericWordPattern.MatchString(word) || strings.HasPrefix(word, "aument") {
 			continue
 		}
 		return false

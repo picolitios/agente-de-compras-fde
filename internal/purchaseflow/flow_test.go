@@ -442,13 +442,14 @@ func TestCarInquiryOtherCurrency(t *testing.T) {
 	}
 }
 
-// TestSingularCarBudgetContinuation preserva o pedido curto durante dois ajustes seguidos.
+// TestSingularCarBudgetContinuation preserva o pedido curto durante ajustes consecutivos.
 func TestSingularCarBudgetContinuation(t *testing.T) {
 	vehicles := []catalog.Product{
 		{ID: 169, Title: "Dodge Hornet GT Plus", Category: "vehicle", Price: "24999.99"},
 		{ID: 170, Title: "300 Touring", Category: "vehicle", Price: "28999.99"},
 	}
 	decider := &sequenceDecider{decisions: []purchaseagent.Decision{
+		{Status: "clarify", Message: "Não há carros"},
 		{Status: "clarify", Message: "Não há carros"},
 		{Status: "clarify", Message: "Não há carros"},
 		{Status: "clarify", Message: "Não há carros"},
@@ -472,6 +473,12 @@ func TestSingularCarBudgetContinuation(t *testing.T) {
 	if err != nil || third.Type != "proposal" || len(third.Products) != 2 ||
 		third.Proposal.Requirements.MaxUnitCents == nil || *third.Proposal.Requirements.MaxUnitCents != 3000000 {
 		t.Fatalf("segundo ajuste inesperado: %+v, %v", third, err)
+	}
+	fourth, err := flow.Start(context.Background(), first.ConversationID, "aumento pra 60000,00")
+	if err != nil || fourth.Type != "proposal" || len(fourth.Products) != 2 ||
+		fourth.Proposal.Requirements.Quantity != 1 || fourth.Proposal.Requirements.Category != "vehicle" ||
+		fourth.Proposal.Requirements.MaxUnitCents == nil || *fourth.Proposal.Requirements.MaxUnitCents != 6000000 {
+		t.Fatalf("terceiro ajuste inesperado: %+v, %v", fourth, err)
 	}
 }
 
@@ -687,6 +694,7 @@ func TestBudgetFollowupParsing(t *testing.T) {
 		{"pode ser 25000,00 entao", "25000"},
 		{"pode ficar em 25000,00", "25000"},
 		{"fechado em 25000,00", "25000"},
+		{"aumento pra 60000,00", "60000"},
 		{"sim", "24999.99"},
 	} {
 		got, ok := budgetFollowup(test.message, pending)
